@@ -1,0 +1,52 @@
+package net.fireboy.milestone;
+
+import com.mojang.logging.LogUtils;
+import org.slf4j.Logger;
+
+import net.fireboy.aerocloakingcore.block.ModBlocks;
+import net.fireboy.aerocloakingcore.block.entity.ModBlockEntities;
+import net.fireboy.aerocloakingcore.server.config.AeroCloakingCoreServerConfig;
+import net.fireboy.aerocloakingcore.item.ModItems;
+import net.fireboy.aerocloakingcore.menu.ModMenus;
+
+import net.minecraft.resources.ResourceLocation;
+
+import net.neoforged.bus.api.IEventBus;
+import net.neoforged.fml.ModContainer;
+import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.config.ModConfig;
+import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
+
+/**
+ * Main entry point for Aero Cloaking Core.
+ */
+@Mod(Milestone.MOD_ID)
+public class Milestone {
+
+    public static final String MOD_ID = "milestone";
+    public static final Logger LOGGER = LogUtils.getLogger();
+
+    public static ResourceLocation path(String path) {
+        return ResourceLocation.fromNamespaceAndPath(MOD_ID, path);
+    }
+
+    public Milestone(
+            IEventBus modEventBus,
+            ModContainer modContainer
+    ) {
+        modEventBus.addListener(this::commonSetup);
+
+        ModBlocks.BLOCKS.register(modEventBus);
+        ModBlockEntities.BLOCK_ENTITIES.register(modEventBus);
+        ModItems.ITEMS.register(modEventBus);
+        ModMenus.MENUS.register(modEventBus);
+
+        // Server-authoritative cloak behaviour and reveal distances.
+        modContainer.registerConfig(
+                ModConfig.Type.SERVER,
+                MilestoneServerConfig.SPEC
+        );
+
+        LOGGER.info("Loading Milestone");
+    }
+}
