@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "milestone:block/resonant_block"
+    }
+  }
+}

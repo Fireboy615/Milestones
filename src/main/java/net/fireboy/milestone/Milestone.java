@@ -1,52 +1,40 @@
 package net.fireboy.milestone;
 
-import com.mojang.logging.LogUtils;
-import org.slf4j.Logger;
-
-import net.fireboy.aerocloakingcore.block.ModBlocks;
-import net.fireboy.aerocloakingcore.block.entity.ModBlockEntities;
-import net.fireboy.aerocloakingcore.server.config.AeroCloakingCoreServerConfig;
-import net.fireboy.aerocloakingcore.item.ModItems;
-import net.fireboy.aerocloakingcore.menu.ModMenus;
-
-import net.minecraft.resources.ResourceLocation;
-
+import net.fireboy.milestone.command.MilestoneCommands;
+import net.fireboy.milestone.registry.ModBlockEntities;
+import net.fireboy.milestone.registry.ModBlocks;
+import net.fireboy.milestone.registry.ModItems;
+import net.fireboy.milestone.resonance.GrowthManager;
+import net.fireboy.milestone.resonance.ResonanceEvents;
+import net.fireboy.milestone.resonance.RegenerationManager;
+import net.fireboy.milestone.resonance.RetractionManager;
+import net.minecraft.world.item.CreativeModeTabs;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
-import net.neoforged.fml.config.ModConfig;
-import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.BuildCreativeModeTabContentsEvent;
 
-/**
- * Main entry point for Aero Cloaking Core.
- */
 @Mod(Milestone.MOD_ID)
-public class Milestone {
-
+public final class Milestone {
     public static final String MOD_ID = "milestone";
-    public static final Logger LOGGER = LogUtils.getLogger();
 
-    public static ResourceLocation path(String path) {
-        return ResourceLocation.fromNamespaceAndPath(MOD_ID, path);
+    public Milestone(IEventBus modBus, ModContainer container) {
+        ModBlocks.BLOCKS.register(modBus);
+        ModItems.ITEMS.register(modBus);
+        ModBlockEntities.BLOCK_ENTITIES.register(modBus);
+
+        modBus.addListener(this::addCreativeTabContents);
+        NeoForge.EVENT_BUS.addListener(MilestoneCommands::register);
+        NeoForge.EVENT_BUS.addListener(ResonanceEvents::onBlockBreak);
+        NeoForge.EVENT_BUS.addListener(GrowthManager::onServerTick);
+        NeoForge.EVENT_BUS.addListener(RetractionManager::onServerTick);
+        NeoForge.EVENT_BUS.addListener(RegenerationManager::onServerTick);
     }
 
-    public Milestone(
-            IEventBus modEventBus,
-            ModContainer modContainer
-    ) {
-        modEventBus.addListener(this::commonSetup);
-
-        ModBlocks.BLOCKS.register(modEventBus);
-        ModBlockEntities.BLOCK_ENTITIES.register(modEventBus);
-        ModItems.ITEMS.register(modEventBus);
-        ModMenus.MENUS.register(modEventBus);
-
-        // Server-authoritative cloak behaviour and reveal distances.
-        modContainer.registerConfig(
-                ModConfig.Type.SERVER,
-                MilestoneServerConfig.SPEC
-        );
-
-        LOGGER.info("Loading Milestone");
+    private void addCreativeTabContents(BuildCreativeModeTabContentsEvent event) {
+        if (event.getTabKey() == CreativeModeTabs.FUNCTIONAL_BLOCKS) {
+            event.accept(ModItems.MILESTONE_CORE.get());
+        }
     }
 }
