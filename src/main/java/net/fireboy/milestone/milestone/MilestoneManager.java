@@ -4,6 +4,9 @@ import net.fireboy.milestone.blockentity.MilestoneCoreBlockEntity;
 import net.fireboy.milestone.registry.ModBlocks;
 import net.fireboy.milestone.world.MilestoneSavedData;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.saveddata.SavedData;
@@ -26,7 +29,7 @@ public final class MilestoneManager {
     }
 
     public static MilestoneRecord register(ServerLevel level, MilestoneCoreBlockEntity core) {
-        MilestoneRecord record = new MilestoneRecord(
+        MilestoneRecord record = MilestoneRecord.fresh(
                 core.getMilestoneId(),
                 level.dimension().location().toString(),
                 core.getBlockPos(),
@@ -35,6 +38,34 @@ public final class MilestoneManager {
         );
         data(level.getServer()).put(record);
         return record;
+    }
+
+
+    public static Optional<MilestoneRecord> get(MinecraftServer server, UUID milestoneId) {
+        return data(server).get(milestoneId);
+    }
+
+    /** Resolve the level that owns a persisted Milestone record. */
+    public static ServerLevel levelFor(MinecraftServer server, MilestoneRecord record) {
+        ResourceLocation location = ResourceLocation.tryParse(record.dimension());
+        if (location == null) {
+            return null;
+        }
+        return server.getLevel(ResourceKey.create(Registries.DIMENSION, location));
+    }
+
+    /** Persist a gameplay-updated record and mirror its lifecycle state into the loaded Core. */
+    public static MilestoneRecord save(ServerLevel level, MilestoneRecord record) {
+        data(level.getServer()).put(record);
+
+        if (level.getBlockEntity(record.corePos()) instanceof MilestoneCoreBlockEntity core) {
+            core.setMilestoneState(record.state());
+        }
+        return record;
+    }
+
+    public static MilestoneRecord setState(ServerLevel level, MilestoneRecord record, MilestoneState state) {
+        return save(level, record.withState(state));
     }
 
     public static void unregister(ServerLevel level, UUID milestoneId) {

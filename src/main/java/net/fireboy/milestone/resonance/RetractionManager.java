@@ -161,6 +161,11 @@ public final class RetractionManager {
             }
 
             if (restoreCursor >= plan.totalPositions()) {
+                // Backward-compatibility sweep: old builds could restore Milestone
+                // lichen as terrain after the vine had swallowed it. At the end of
+                // retraction every real support has reached its final state, so any
+                // Glow Lichen that can no longer survive is genuinely orphaned.
+                GlowLichenManager.cleanupUnsupportedAround(level, plan.positions());
                 data.remove(plan.milestoneId());
             } else if (fadeCursor != plan.fadeCursor() || restoreCursor != plan.restoreCursor()) {
                 data.put(plan.withCursors(fadeCursor, restoreCursor));

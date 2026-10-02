@@ -4,9 +4,15 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import net.fireboy.milestone.blockentity.MilestoneCoreBlockEntity;
+import net.fireboy.milestone.gateway.PublicGatewayManager;
+import net.fireboy.milestone.gateway.PublicGatewayRecord;
 import net.fireboy.milestone.milestone.MilestoneManager;
+import net.fireboy.milestone.milestone.MilestoneGameplayManager;
 import net.fireboy.milestone.milestone.MilestoneRecord;
+import net.fireboy.milestone.milestone.MilestoneProgressionManager;
+import net.fireboy.milestone.milestone.MilestoneUnlock;
 import net.fireboy.milestone.milestone.MilestoneState;
+import net.fireboy.milestone.milestone.MilestoneType;
 import net.fireboy.milestone.registry.ModBlocks;
 import net.fireboy.milestone.resonance.GrowthManager;
 import net.fireboy.milestone.resonance.GrowthPlan;
@@ -33,6 +39,7 @@ public final class MilestoneCommands {
     private static final int SEARCH_RADIUS = 12;
     private static final int RESONANCE_OWNER_RADIUS = 32;
     private static final int TENDRIL_OWNER_RADIUS = 128;
+    private static final int GATEWAY_SEARCH_RADIUS = 8;
     private static final double MAX_TENDRIL_DISTANCE = 96.0D;
 
     private MilestoneCommands() {
@@ -48,6 +55,10 @@ public final class MilestoneCommands {
                                 .executes(MilestoneCommands::info))
                         .then(Commands.literal("list")
                                 .executes(MilestoneCommands::list))
+                        .then(Commands.literal("unlocks")
+                                .executes(MilestoneCommands::unlocks)
+                                .then(Commands.literal("clear")
+                                        .executes(MilestoneCommands::unlocksClear)))
                         .then(Commands.literal("setstate")
                                 .then(Commands.argument("state", StringArgumentType.word())
                                         .suggests((context, builder) -> {
@@ -57,6 +68,15 @@ public final class MilestoneCommands {
                                             return builder.buildFuture();
                                         })
                                         .executes(MilestoneCommands::setState)))
+                        .then(Commands.literal("settype")
+                                .then(Commands.argument("type", StringArgumentType.word())
+                                        .suggests((context, builder) -> {
+                                            for (MilestoneType type : MilestoneType.values()) {
+                                                builder.suggest(type.name().toLowerCase(Locale.ROOT));
+                                            }
+                                            return builder.buildFuture();
+                                        })
+                                        .executes(MilestoneCommands::setType)))
                         .then(Commands.literal("resonate")
                                 .executes(MilestoneCommands::resonate))
                         .then(Commands.literal("resonatearea")
@@ -78,6 +98,27 @@ public final class MilestoneCommands {
                                 .executes(MilestoneCommands::regenerationStatus))
                         .then(Commands.literal("resonanceinfo")
                                 .executes(MilestoneCommands::resonanceInfo))
+                        .then(Commands.literal("task")
+                                .then(Commands.literal("view")
+                                        .executes(MilestoneCommands::taskView))
+                                .then(Commands.literal("reroll")
+                                        .executes(MilestoneCommands::taskReroll)))
+                        .then(Commands.literal("contributor")
+                                .then(Commands.literal("addfake")
+                                        .executes(MilestoneCommands::contributorAddFake)
+                                        .then(Commands.argument("amount", IntegerArgumentType.integer(1, 64))
+                                                .executes(MilestoneCommands::contributorAddFake)))
+                                .then(Commands.literal("clear")
+                                        .executes(MilestoneCommands::contributorClear)))
+                        .then(Commands.literal("gateway")
+                                .then(Commands.literal("register")
+                                        .executes(MilestoneCommands::gatewayRegister))
+                                .then(Commands.literal("unregister")
+                                        .executes(MilestoneCommands::gatewayUnregister))
+                                .then(Commands.literal("list")
+                                        .executes(MilestoneCommands::gatewayList))
+                                .then(Commands.literal("clear")
+                                        .executes(MilestoneCommands::gatewayClear)))
         );
     }
 
@@ -128,9 +169,12 @@ public final class MilestoneCommands {
         source.sendSuccess(
                 () -> Component.literal(
                         "Milestone " + shortId(record) +
+                                " | type=" + record.type().name() +
                                 " | state=" + record.state().name() +
                                 " | pos=" + formatPos(record.corePos()) +
                                 " | dimension=" + record.dimension() +
+                                " | contributors=" + record.contributorCount() +
+                                " | assignedTasks=" + record.assignments().size() +
                                 " | resonance=" + resonanceCount +
                                 " | createdTick=" + record.createdGameTime()
                 ),
@@ -149,6 +193,7 @@ public final class MilestoneCommands {
                     () -> Component.literal(
                             "- " + shortId(record) +
                                     " " + record.state().name() +
+                                    " contributors=" + record.contributorCount() +
                                     " @ " + formatPos(record.corePos()) +
                                     " [" + record.dimension() + "]"
                     ),
@@ -156,6 +201,35 @@ public final class MilestoneCommands {
             );
         }
         return records.size();
+    }
+
+    private static int unlocks(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        var unlocked = MilestoneProgressionManager.unlocks(source.getServer());
+
+        if (unlocked.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("No server-wide Milestone unlocks have been earned yet."), false);
+            return 0;
+        }
+
+        source.sendSuccess(() -> Component.literal("Server-wide Milestone unlocks (" + unlocked.size() + "):"), false);
+        for (MilestoneUnlock unlock : MilestoneUnlock.values()) {
+            if (unlocked.contains(unlock)) {
+                source.sendSuccess(() -> Component.literal("- " + unlock.name()), false);
+            }
+        }
+        return unlocked.size();
+    }
+
+    private static int unlocksClear(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        int before = MilestoneProgressionManager.unlocks(source.getServer()).size();
+        MilestoneProgressionManager.clear(source.getServer());
+        source.sendSuccess(
+                () -> Component.literal("Cleared " + before + " server-wide Milestone unlock(s)."),
+                true
+        );
+        return before;
     }
 
     private static int setState(CommandContext<CommandSourceStack> context) {
@@ -192,6 +266,45 @@ public final class MilestoneCommands {
 
         source.sendSuccess(
                 () -> Component.literal("Milestone " + shortId(record) + " state -> " + newState.name()),
+                true
+        );
+        return 1;
+    }
+
+    private static int setType(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerLevel level = source.getLevel();
+        String requested = StringArgumentType.getString(context, "type");
+
+        MilestoneType newType;
+        try {
+            newType = MilestoneType.valueOf(requested.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            source.sendFailure(Component.literal("Unknown Milestone type: " + requested));
+            return 0;
+        }
+
+        MilestoneRecord record = nearestGameplayCore(source);
+        if (record == null) {
+            return 0;
+        }
+
+        if (record.type() == newType) {
+            source.sendSuccess(
+                    () -> Component.literal("Milestone " + shortId(record) + " is already " + newType.name() + "."),
+                    false
+            );
+            return 1;
+        }
+
+        MilestoneRecord updated = record.withTypeResetProgress(newType);
+        MilestoneManager.save(level, updated);
+
+        source.sendSuccess(
+                () -> Component.literal(
+                        "Milestone " + shortId(updated) + " type -> " + newType.name() +
+                                ". Tasks and contribution progress were reset."
+                ),
                 true
         );
         return 1;
@@ -586,6 +699,182 @@ public final class MilestoneCommands {
                 false
         );
         return 1;
+    }
+
+
+    private static int taskView(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("This command must be run by a player."));
+            return 0;
+        }
+
+        MilestoneRecord record = nearestGameplayCore(source);
+        if (record == null) {
+            return 0;
+        }
+
+        record = MilestoneGameplayManager.ensureAssignment(source.getLevel(), record, player.getUUID());
+        MilestoneGameplayManager.showStatus(player, record);
+        return 1;
+    }
+
+    private static int taskReroll(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("This command must be run by a player."));
+            return 0;
+        }
+
+        MilestoneRecord record = nearestGameplayCore(source);
+        if (record == null) {
+            return 0;
+        }
+
+        record = MilestoneGameplayManager.rerollPlayerTask(source.getLevel(), record, player);
+        source.sendSuccess(() -> Component.literal("Rerolled your prototype Milestone task."), false);
+        MilestoneGameplayManager.showStatus(player, record);
+        return 1;
+    }
+
+    private static int contributorAddFake(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        MilestoneRecord record = nearestGameplayCore(source);
+        if (record == null) {
+            return 0;
+        }
+
+        int amount;
+        try {
+            amount = IntegerArgumentType.getInteger(context, "amount");
+        } catch (IllegalArgumentException ignored) {
+            amount = 1;
+        }
+
+        MilestoneRecord updated = MilestoneGameplayManager.addFakeContributors(
+                source.getLevel(),
+                record,
+                amount
+        );
+        int added = amount;
+        source.sendSuccess(
+                () -> Component.literal("Added " + added + " fake contributor(s). Total=" + updated.contributorCount()),
+                true
+        );
+        return amount;
+    }
+
+    private static int contributorClear(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        MilestoneRecord record = nearestGameplayCore(source);
+        if (record == null) {
+            return 0;
+        }
+
+        MilestoneRecord updated = MilestoneGameplayManager.clearContributors(source.getLevel(), record);
+        source.sendSuccess(
+                () -> Component.literal("Cleared contribution progress. State=" + updated.state().name()),
+                true
+        );
+        return 1;
+    }
+
+    private static int gatewayRegister(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("This command must be run by a player."));
+            return 0;
+        }
+
+        PublicGatewayManager.RegistrationResult result =
+                PublicGatewayManager.registerNearest(player, GATEWAY_SEARCH_RADIUS);
+        if (!result.success()) {
+            source.sendFailure(Component.literal(result.message()));
+            return 0;
+        }
+
+        source.sendSuccess(() -> Component.literal(result.message()), true);
+        return 1;
+    }
+
+    private static int gatewayUnregister(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("This command must be run by a player."));
+            return 0;
+        }
+
+        PublicGatewayManager.RegistrationResult result =
+                PublicGatewayManager.unregisterNearest(player, GATEWAY_SEARCH_RADIUS);
+        if (!result.success()) {
+            source.sendFailure(Component.literal(result.message()));
+            return 0;
+        }
+
+        source.sendSuccess(() -> Component.literal(result.message()), true);
+        return 1;
+    }
+
+    private static int gatewayList(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        int allowed = PublicGatewayManager.allowedGatewayCount(source.getServer());
+        var gateways = PublicGatewayManager.sorted(source.getServer());
+        String allowedText = allowed == Integer.MAX_VALUE ? "unlimited (personal portals unlocked)" : Integer.toString(allowed);
+
+        source.sendSuccess(
+                () -> Component.literal("Public Nether gateways: " + gateways.size() + "/" + allowedText),
+                false
+        );
+
+        for (PublicGatewayRecord gateway : gateways) {
+            StringBuilder sides = new StringBuilder();
+            for (int i = 0; i < gateway.sides().size(); i++) {
+                var side = gateway.sides().get(i);
+                if (i > 0) {
+                    sides.append(" <-> ");
+                }
+                sides.append(side.dimension())
+                        .append(" @ ")
+                        .append(formatPos(side.min()));
+            }
+            String sideText = sides.length() == 0 ? "unbound" : sides.toString();
+            source.sendSuccess(
+                    () -> Component.literal("- " + PublicGatewayManager.shortId(gateway) + " | " + sideText),
+                    false
+            );
+        }
+        return 1;
+    }
+
+    private static int gatewayClear(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        int before = PublicGatewayManager.registeredGatewayCount(source.getServer());
+        PublicGatewayManager.clear(source.getServer());
+        source.sendSuccess(
+                () -> Component.literal("Cleared " + before + " public Nether gateway registration(s)."),
+                true
+        );
+        return before;
+    }
+
+    private static MilestoneRecord nearestGameplayCore(CommandSourceStack source) {
+        ServerLevel level = source.getLevel();
+        BlockPos origin = BlockPos.containing(source.getPosition());
+        MilestoneRecord record = MilestoneManager.nearest(
+                source.getServer(),
+                level,
+                origin,
+                SEARCH_RADIUS
+        ).orElse(null);
+
+        if (record == null) {
+            source.sendFailure(Component.literal("No registered Milestone Core within " + SEARCH_RADIUS + " blocks."));
+        }
+        return record;
     }
 
     private static MilestoneRecord nearestGrowthOwner(CommandSourceStack source) {

@@ -10,17 +10,21 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.MultifaceBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.saveddata.SavedData;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
 
 /**
  * Adds sparse vanilla Glow Lichen to mature Resonance surfaces and tracks every
- * face Milestone creates so it can be cleaned up safely during stripping and
- * retraction without touching unrelated lichen.
+ * lichen voxel Milestone creates. Milestone lichen is only ever placed into empty
+ * air and never merged into pre-existing lichen, so the whole tracked voxel belongs
+ * to the Milestone and can be removed reliably during stripping/retraction.
  */
 public final class GlowLichenManager {
     /** Chance that one newly-matured surface voxel sprouts lichen at all. */
@@ -35,6 +39,73 @@ public final class GlowLichenManager {
     public static GlowLichenSavedData data(MinecraftServer server) {
         return server.overworld().getDataStorage()
                 .computeIfAbsent(FACTORY, GlowLichenSavedData.DATA_NAME);
+    }
+
+    /**
+     * Periodic repair pass for tracked Milestone lichen. This catches reload/order
+     * edge cases where the supporting Resonance vanished before its decorative
+     * lichen face was removed. Only Milestone-owned faces are touched.
+     */
+    public static void onServerTick(ServerTickEvent.Post event) {
+        MinecraftServer server = event.getServer();
+        if (server.getTickCount() % 100 != 0) {
+            return;
+        }
+
+        GlowLichenSavedData saved = data(server);
+        List<GlowLichenRecord> snapshot = new ArrayList<>(saved.all());
+        for (GlowLichenRecord record : snapshot) {
+            ServerLevel level = findLevel(server, record.dimension());
+            if (level == null || !level.hasChunkAt(record.pos()) || !level.hasChunkAt(record.supportPos())) {
+                continue;
+            }
+
+            ResonanceRecord support = ResonanceManager.get(level, record.supportPos()).orElse(null);
+            boolean validSupport = support != null
+                    && support.milestoneId().equals(record.milestoneId())
+                    && ResonanceManager.isResonantState(level.getBlockState(record.supportPos()));
+
+            if (!validSupport) {
+                removeTrackedBlock(level, record);
+                saved.remove(record.dimension(), record.pos());
+                continue;
+            }
+
+            // Face orientation is intentionally not used as an ownership check.
+            // Older builds could save/remove the wrong face and then discard the
+            // record, leaving a floating lichen voxel behind. If the tracked voxel
+            // is still Glow Lichen, it remains ours regardless of its face state.
+            BlockState state = level.getBlockState(record.pos());
+            if (!state.is(Blocks.GLOW_LICHEN)) {
+                saved.remove(record.dimension(), record.pos());
+            }
+        }
+    }
+
+
+    /**
+     * Returns true when this exact voxel is temporary Glow Lichen created by the
+     * same Milestone. Growth uses this before covering the voxel so it can treat
+     * the decoration as part of the living vine rather than as original terrain.
+     */
+    public static boolean isOwnedAt(ServerLevel level, BlockPos pos, UUID milestoneId) {
+        GlowLichenRecord record = data(level.getServer()).get(dimension(level), pos);
+        return record != null
+                && record.milestoneId().equals(milestoneId)
+                && level.getBlockState(pos).is(Blocks.GLOW_LICHEN);
+    }
+
+    /**
+     * Growth has successfully replaced one of its own decorative lichen voxels.
+     * The world block is already Resonance at this point, so only discard the
+     * lichen ownership record; do not touch the newly placed Resonance block.
+     */
+    public static void consumedByGrowth(ServerLevel level, BlockPos pos, UUID milestoneId) {
+        String dimension = dimension(level);
+        GlowLichenRecord record = data(level.getServer()).get(dimension, pos);
+        if (record != null && record.milestoneId().equals(milestoneId)) {
+            data(level.getServer()).remove(dimension, pos);
+        }
     }
 
     /** Called when a Young Resonance voxel hardens into mature Resonance. */
@@ -103,8 +174,12 @@ public final class GlowLichenManager {
     }
 
     /**
-     * Removes only Milestone-created lichen faces supported by this Resonance
-     * position. Any other faces later added to the same lichen block are preserved.
+     * Removes Milestone-created lichen supported by this Resonance position.
+     *
+     * Milestone lichen is only created in an AIR voxel and we refuse to merge into
+     * existing lichen, so a tracked Glow Lichen block is entirely ours. Removing the
+     * whole voxel is considerably more robust than trying to remove a saved face and
+     * also fixes the old floating-lichen failure mode.
      */
     public static void removeSupportedBy(ServerLevel level, BlockPos supportPos, UUID milestoneId) {
         String dimension = dimension(level);
@@ -114,26 +189,49 @@ public final class GlowLichenManager {
         for (GlowLichenRecord record : records) {
             BlockPos pos = record.pos();
             if (!level.hasChunkAt(pos)) {
-                // Retraction already refuses to force-load its own Resonance chunks.
-                // Leave the record so a later loaded cleanup can still identify it.
+                // Leave the ownership record intact. The periodic repair pass will
+                // remove it once the lichen chunk is loaded again.
                 continue;
             }
 
-            BlockState state = level.getBlockState(pos);
-            if (state.is(Blocks.GLOW_LICHEN) && MultifaceBlock.hasFace(state, record.face())) {
-                BlockState updated = state.setValue(
-                        MultifaceBlock.getFaceProperty(record.face()),
-                        Boolean.FALSE
-                );
-
-                if (MultifaceBlock.availableFaces(updated).isEmpty()) {
-                    updated = Blocks.AIR.defaultBlockState();
-                }
-                level.setBlock(pos, updated, Block.UPDATE_ALL);
-            }
-
+            removeTrackedBlock(level, record);
             saved.remove(dimension, pos);
         }
+    }
+
+    /**
+     * Final safety sweep for lichen left behind by older Milestone builds. Those
+     * versions could accidentally save temporary lichen as a Resonance voxel's
+     * original terrain and later restore it after its support had vanished. We only
+     * remove Glow Lichen that Minecraft itself says can no longer survive, so valid
+     * natural/player lichen is preserved.
+     */
+    public static int cleanupUnsupportedAround(ServerLevel level, List<BlockPos> formerResonance) {
+        Set<Long> checked = new HashSet<>();
+        int removed = 0;
+
+        for (BlockPos resonancePos : formerResonance) {
+            removed += cleanupUnsupportedAt(level, resonancePos, checked);
+            for (Direction direction : Direction.values()) {
+                removed += cleanupUnsupportedAt(level, resonancePos.relative(direction), checked);
+            }
+        }
+
+        return removed;
+    }
+
+    private static int cleanupUnsupportedAt(ServerLevel level, BlockPos pos, Set<Long> checked) {
+        if (!checked.add(pos.asLong()) || !level.hasChunkAt(pos)) {
+            return 0;
+        }
+
+        BlockState state = level.getBlockState(pos);
+        if (state.is(Blocks.GLOW_LICHEN) && !state.canSurvive(level, pos)) {
+            level.setBlock(pos, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+            data(level.getServer()).remove(dimension(level), pos);
+            return 1;
+        }
+        return 0;
     }
 
     /** Emergency cleanup used when an entire Milestone is removed. */
@@ -148,21 +246,35 @@ public final class GlowLichenManager {
         }
 
         for (GlowLichenRecord record : records) {
-            if (level.hasChunkAt(record.pos())) {
-                BlockState state = level.getBlockState(record.pos());
-                if (state.is(Blocks.GLOW_LICHEN) && MultifaceBlock.hasFace(state, record.face())) {
-                    BlockState updated = state.setValue(
-                            MultifaceBlock.getFaceProperty(record.face()),
-                            Boolean.FALSE
-                    );
-                    if (MultifaceBlock.availableFaces(updated).isEmpty()) {
-                        updated = Blocks.AIR.defaultBlockState();
-                    }
-                    level.setBlock(record.pos(), updated, Block.UPDATE_ALL);
-                }
+            if (!level.hasChunkAt(record.pos())) {
+                // Keep unloaded records so they can be repaired when loaded later.
+                continue;
             }
+
+            removeTrackedBlock(level, record);
             saved.remove(record.dimension(), record.pos());
         }
+    }
+
+    /**
+     * Removes a tracked Milestone lichen voxel if it still exists. Because these
+     * records are only created after placing into AIR, the entire Glow Lichen block
+     * belongs to Milestone rather than just one directional face.
+     */
+    private static void removeTrackedBlock(ServerLevel level, GlowLichenRecord record) {
+        BlockState state = level.getBlockState(record.pos());
+        if (state.is(Blocks.GLOW_LICHEN)) {
+            level.setBlock(record.pos(), Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+        }
+    }
+
+    private static ServerLevel findLevel(MinecraftServer server, String dimension) {
+        for (ServerLevel level : server.getAllLevels()) {
+            if (dimension(level).equals(dimension)) {
+                return level;
+            }
+        }
+        return null;
     }
 
     private static long seed(BlockPos pos, UUID milestoneId) {

@@ -48,10 +48,24 @@ public final class ResonanceManager {
             return false;
         }
 
-        BlockState originalState = level.getBlockState(pos);
-        if (!canCover(level, pos, originalState)) {
+        BlockState worldState = level.getBlockState(pos);
+        if (!canCover(level, pos, worldState)) {
             return false;
         }
+
+        // A mature section may have previously sprouted Milestone-owned Glow
+        // Lichen into this air voxel. Later thickening can grow through that same
+        // voxel. In that case the lichen is part of the living Milestone, not
+        // original terrain, so retraction must restore AIR rather than resurrecting
+        // a floating lichen block. Natural/player lichen is not treated this way.
+        boolean swallowingOwnedLichen = GlowLichenManager.isOwnedAt(
+                level,
+                pos,
+                milestoneId
+        );
+        BlockState originalState = swallowingOwnedLichen
+                ? net.minecraft.world.level.block.Blocks.AIR.defaultBlockState()
+                : worldState;
 
         ResonanceRecord record = new ResonanceRecord(
                 dimension,
@@ -70,6 +84,10 @@ public final class ResonanceManager {
         if (!changed) {
             data.remove(dimension, pos);
             return false;
+        }
+
+        if (swallowingOwnedLichen) {
+            GlowLichenManager.consumedByGrowth(level, pos, milestoneId);
         }
 
         // Fresh Resonance starts as the sparse young-growth texture and hardens later.
@@ -441,6 +459,11 @@ public final class ResonanceManager {
             return FadeOutcome.STALE;
         }
 
+        // Glow lichen belongs to mature Resonance, so remove its owned face as soon
+        // as the support enters the young/regressing stage rather than waiting for
+        // the terrain-restoration front. This also avoids floating lichen on reload.
+        GlowLichenManager.removeSupportedBy(level, pos, milestoneId);
+
         if (current.is(ModBlocks.YOUNG_RESONANT_BLOCK.get())) {
             return FadeOutcome.FADED;
         }
@@ -547,6 +570,12 @@ public final class ResonanceManager {
                 failed++;
             }
         }
+
+        List<BlockPos> formerPositions = new ArrayList<>(records.size());
+        for (ResonanceRecord record : records) {
+            formerPositions.add(record.pos());
+        }
+        GlowLichenManager.cleanupUnsupportedAround(level, formerPositions);
 
         return new RetractionResult(restored, stale, failed);
     }
