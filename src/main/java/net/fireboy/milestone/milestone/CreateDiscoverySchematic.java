@@ -102,7 +102,8 @@ public final class CreateDiscoverySchematic {
         if (record.discoveredBy() == null) {
             throw new IOException("Cannot create schematic for an undiscovered Core");
         }
-        byte[] bytes = blueprintBytes();
+        ConfiguredSchematic.Blueprint custom = ConfiguredSchematic.forRecord(record);
+        byte[] bytes = custom == null ? blueprintBytes() : custom.bytes();
         Path root = CreatePaths.UPLOADED_SCHEMATICS_DIR.toAbsolutePath().normalize();
         Path directory = root.resolve(owner(record)).normalize();
         if (!directory.startsWith(root)) throw new IOException("Invalid schematic owner");
@@ -125,7 +126,8 @@ public final class CreateDiscoverySchematic {
         extra.putLong("CorePos", record.corePos().asLong());
         schematic.set(DataComponents.CUSTOM_DATA, CustomData.of(extra));
         schematic.set(DataComponents.CUSTOM_NAME,
-                Component.literal("Milestone Chamber: " + record.type().displayName())
+                Component.literal(ConfiguredSchematic.displayName(record) + ": "
+                        + record.type().displayName())
                         .withStyle(ChatFormatting.AQUA));
         CreateSchematicNetwork.send(player, filename(record), bytes);
         return schematic;

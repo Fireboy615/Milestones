@@ -45,27 +45,41 @@ public final class StationConstructionManager {
         StationConstructionSavedData saved = data(stationLevel.getServer());
         if (saved.isVerified(record.id())) return "This Milestone's structure is already certified.";
 
-        // The chiseled deepslate is at the centre of the 5x5 schematic floor.
-        // Only check loaded chunks; never generate new terrain during validation.
+        ConfiguredSchematic.Blueprint custom = null;
+        try {
+            custom = ConfiguredSchematic.forRecord(record);
+        } catch (java.io.IOException exception) {
+            return "Schematic file is missing or invalid: " + exception.getMessage();
+        }
+        // Scan near the station without generating new chunks.
+        // Custom structure uses the first non-air block as an anchor.
+        // The legacy chamber still uses its fixed chiseled-deepslate centre.
         for (int dx = -RADIUS; dx <= RADIUS; dx++) {
             for (int dz = -RADIUS; dz <= RADIUS; dz++) {
                 if (dx * dx + dz * dz > RADIUS * RADIUS || dx * dx + dz * dz < 49) continue;
                 for (int dy = -VERTICAL; dy <= VERTICAL; dy++) {
                     BlockPos center = station.offset(dx, dy, dz);
-                    if (saved.positionUsed(center) || !stationLevel.hasChunkAt(center)
-                            || !stationLevel.getBlockState(center).is(Blocks.CHISELED_DEEPSLATE)) {
+                    if (saved.positionUsed(center) || !stationLevel.hasChunkAt(center))
                         continue;
+                    if (custom == null) {
+                        if (!stationLevel.getBlockState(center).is(Blocks.CHISELED_DEEPSLATE)
+                                || !matches(stationLevel, center)) continue;
+                    } else {
+                        // Early anchor comparison avoids full checks at every candidate.
+                        var first = custom.blocks().get(0).state();
+                        if (!net.minecraft.nbt.NbtUtils.writeBlockState(
+                                stationLevel.getBlockState(center)).equals(first)) continue;
+                        if (!ConfiguredSchematic.matches(stationLevel, center, custom)) continue;
                     }
-                    if (matches(stationLevel, center)) {
-                        saved.verify(record.id(), center);
-                        return "Chamber verified! This Milestone's tasks are now unlocked permanently.";
-                    }
+                    saved.verify(record.id(), center);
+                    return (custom == null ? "Chamber" : "Custom schematic")
+                            + " verified! This Milestone's tasks are now unlocked permanently.";
                 }
             }
         }
-        return "No complete chamber found within " + RADIUS
-                + " blocks horizontally and " + VERTICAL
-                + " vertically. Build the 5x5 floor and four sea lanterns from your Create schematic.";
+        return (custom == null ? "No complete chamber" : "No matching schematic")
+                + " found within " + RADIUS + " blocks horizontally and " + VERTICAL
+                + " vertically. Build the assigned Create schematic without rotation.";
     }
 
     private static boolean matches(ServerLevel level, BlockPos center) {

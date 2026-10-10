@@ -1,8 +1,66 @@
 {
-  "_help": "Add tasks here. type: item, kill, advancement. Use unique IDs; category and difficulty are your own labels.",
+  "_help": "Add tasks: types item (item,count), kill (entity,count), advancement (advancement). category and difficulty are labels used in a Core's preset task mode.",
   "tasks": [
-    {"id":"collect_copper","category":"gathering","difficulty":"easy","type":"item","item":"minecraft:copper_ingot","count":16,"clue":"Bring sixteen copper ingots to the Mission Station."},
-    {"id":"hunt_spider","category":"combat","difficulty":"easy","type":"kill","entity":"minecraft:spider","clue":"Personally defeat a spider."},
-    {"id":"mine_diamonds","category":"exploration","difficulty":"hard","type":"advancement","advancement":"minecraft:story/mine_diamond","clue":"Earn the Diamonds! advancement after receiving this task."}
+    {
+      "id": "collect_copper",
+      "category": "gathering",
+      "difficulty": "easy",
+      "type": "item",
+      "item": "minecraft:copper_ingot",
+      "count": 16,
+      "clue": "Bring sixteen copper ingots to the Mission Station."
+    },
+    {
+      "id": "hunt_spider",
+      "category": "combat",
+      "difficulty": "easy",
+      "type": "kill",
+      "entity": "minecraft:spider",
+      "clue": "Personally defeat a spider."
+    },
+    {
+      "id": "mine_diamonds",
+      "category": "exploration",
+      "difficulty": "hard",
+      "type": "advancement",
+      "advancement": "minecraft:story/mine_diamond",
+      "clue": "Earn the Diamonds! advancement after receiving this task."
+    },
+    {
+      "id": "hunt_zombies_10",
+      "category": "combat",
+      "difficulty": "medium",
+      "type": "kill",
+      "entity": "minecraft:zombie",
+      "count": 10,
+      "clue": "Personally defeat ten zombies to prove your mettle."
+    },
+    {
+      "id": "collect_redstone",
+      "category": "gathering",
+      "difficulty": "medium",
+      "type": "item",
+      "item": "minecraft:redstone",
+      "count": 32,
+      "clue": "Bring 32 redstone dust to the Mission Station."
+    },
+    {
+      "id": "hunt_endermen_20",
+      "category": "combat",
+      "difficulty": "hard",
+      "type": "kill",
+      "entity": "minecraft:enderman",
+      "count": 20,
+      "clue": "Personally defeat twenty endermen."
+    },
+    {
+      "id": "hunt_evokers_5",
+      "category": "combat",
+      "difficulty": "extreme",
+      "type": "kill",
+      "entity": "minecraft:evoker",
+      "count": 5,
+      "clue": "Personally defeat five evokers."
+    }
   ]
 }

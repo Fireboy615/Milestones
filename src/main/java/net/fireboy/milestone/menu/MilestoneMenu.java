@@ -12,10 +12,12 @@ import net.fireboy.milestone.milestone.MilestoneState;
 import net.fireboy.milestone.milestone.MilestoneType;
 import net.fireboy.milestone.registry.ModBlocks;
 import net.fireboy.milestone.registry.ModMenus;
+import net.fireboy.milestone.task.AdvancementTaskDefinition;
 import net.fireboy.milestone.task.ItemSubmissionTaskDefinition;
 import net.fireboy.milestone.task.MilestoneTaskCatalog;
 import net.fireboy.milestone.task.MilestoneTaskDefinition;
 import net.fireboy.milestone.task.MilestoneTaskType;
+import net.fireboy.milestone.task.TaskAssignment;
 import net.fireboy.milestone.task.TaskAssignment;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -45,6 +47,15 @@ public final class MilestoneMenu extends AbstractContainerMenu {
     public static final int BUTTON_NEXT = 2;
     public static final int BUTTON_CLAIM_SCHEMATIC = 3;
     public static final int BUTTON_VERIFY_STRUCTURE = 4;
+    // Client only shows these on the OP-only Debug tab. All actions also
+    // require server-side permission level 2 and a valid open station menu.
+    public static final int BUTTON_DEBUG_REPORT = 5;
+    public static final int BUTTON_DEBUG_ADVANCEMENT = 6;
+    public static final int BUTTON_DEBUG_REROLL_TASK = 7;
+    public static final int BUTTON_DEBUG_RESET_TASK = 8;
+    public static final int BUTTON_DEBUG_COMPLETE_TASK = 9;
+    public static final int BUTTON_DEBUG_FAKE_CONTRIBUTOR = 10;
+    public static final int BUTTON_DEBUG_CLEAR_PROGRESS = 11;
 
     public static final int SUBMISSION_SLOT_X = 150;
     public static final int SUBMISSION_SLOT_Y = 47;
@@ -70,7 +81,8 @@ public final class MilestoneMenu extends AbstractContainerMenu {
     private static final int DATA_CORE_TIER = 9;
     private static final int DATA_KILL_PROGRESS = 10;
     private static final int DATA_UNLOCKED = 11;
-    private static final int DATA_COUNT = 12;
+    private static final int DATA_ADMIN = 12;
+    private static final int DATA_COUNT = 13;
 
     private final BlockPos stationPos;
     private final ContainerLevelAccess access;
@@ -81,6 +93,7 @@ public final class MilestoneMenu extends AbstractContainerMenu {
     private final List<UUID> availableIds;
     private final int[] selection;
     private boolean processingSubmission;
+    private long debugClearRequestedAt;
 
     /** Client-side constructor used by the network menu factory. */
     public MilestoneMenu(int containerId, Inventory playerInventory, RegistryFriendlyByteBuf buffer) {
@@ -163,6 +176,7 @@ public final class MilestoneMenu extends AbstractContainerMenu {
             public int get(int index) {
                 if (index == DATA_SELECTED_INDEX) return selection[0];
                 if (index == DATA_AVAILABLE_COUNT) return ids.size();
+                if (index == DATA_ADMIN) return player instanceof ServerPlayer sp && sp.hasPermissions(2) ? 1 : 0;
                 MilestoneRecord record = ids.isEmpty() ? null
                         : MilestoneManager.get(level.getServer(), ids.get(selection[0])).orElse(null);
                 if (record == null) return index == DATA_TASK_INDEX ? -1 : 0;
@@ -216,6 +230,7 @@ public final class MilestoneMenu extends AbstractContainerMenu {
     public boolean structureVerified() { return data.get(DATA_VERIFIED) != 0; }
     public boolean prerequisitesMet() { return data.get(DATA_UNLOCKED) != 0; }
     public int killProgress() { return data.get(DATA_KILL_PROGRESS); }
+    public boolean adminAccess() { return data.get(DATA_ADMIN) != 0; }
 
     public MilestoneTaskDefinition taskDefinition() {
         if (availableCount() == 0 || !structureVerified() || !prerequisitesMet()) return null;
@@ -276,6 +291,12 @@ public final class MilestoneMenu extends AbstractContainerMenu {
         if (!(player instanceof ServerPlayer serverPlayer) || serverLevel == null
                 || !stillValid(serverPlayer)) return false;
 
+        if (id >= BUTTON_DEBUG_REPORT && id <= BUTTON_DEBUG_CLEAR_PROGRESS) {
+            if (!serverPlayer.hasPermissions(2)) return false;
+            return debugButton(serverPlayer,id);
+        }
+        // Any normal action invalidates a pending destructive debug confirmation.
+        debugClearRequestedAt=0L;
         if (id == BUTTON_PREVIOUS || id == BUTTON_NEXT) {
             if (availableIds.size() <= 1) return false;
             // Return any partial offering before switching to a different task.
@@ -322,6 +343,143 @@ public final class MilestoneMenu extends AbstractContainerMenu {
                 serverPlayer, serverPlayer.getMainHandItem());
         broadcastChanges();
         return true;
+    }
+
+    /** OP-only controls, dispatched by the inventory button protocol.
+     * Never trust a client-rendered button or client-selected IDs. */
+    private boolean debugButton(ServerPlayer player,int action) {
+        UUID id=selectedMilestoneId();
+        if(id==null) {
+            debugMessage(player,"No discovered Core is selected.",ChatFormatting.YELLOW);
+            return false;
+        }
+        MilestoneRecord record=MilestoneManager.get(serverLevel.getServer(),id).orElse(null);
+        if(record==null || record.discoveredBy()==null) {
+            debugMessage(player,"Selected Core is no longer registered.",ChatFormatting.RED);
+            return false;
+        }
+        ServerLevel owning=MilestoneManager.levelFor(serverLevel.getServer(),record);
+        if(owning==null) {
+            debugMessage(player,"The Core's dimension is unavailable: "+record.dimension(),
+                    ChatFormatting.RED);
+            return false;
+        }
+        // This is server-side SavedData; the visible container values are
+        // deliberately not trusted for any progression/debug action.
+        TaskAssignment assignment=record.assignment(player.getUUID()).orElse(null);
+        try {
+            if(action==BUTTON_DEBUG_REPORT) {
+                debugClearRequestedAt=0L;
+                debugMessage(player,"=== Core Debug Report ===",ChatFormatting.AQUA);
+                debugMessage(player,"Core "+(record.coreTier()+1)+" | "+record.id(),
+                        ChatFormatting.GRAY);
+                debugMessage(player,"Dimension "+record.dimension()+" | Pos "
+                                +record.corePos().toShortString(),ChatFormatting.GRAY);
+                debugMessage(player,"State "+record.state()+" | Structure verified: "+
+                        StationConstructionManager.isVerified(serverLevel.getServer(),record)
+                        +" | Prerequisites: "+
+                        MilestoneContentConfig.prerequisitesMet(serverLevel.getServer(),record),
+                        ChatFormatting.GRAY);
+                debugMessage(player,"Contributors "+record.contributorCount()+
+                        " / "+record.type().finalThreshold()+" | Assignments "+
+                        record.assignments().size()+" | Config pool "+
+                        MilestoneTaskCatalog.tasksFor(record).size(),ChatFormatting.GRAY);
+                debugMessage(player,"Your assignment: "+(assignment==null?"none":
+                        assignment.taskId()+"; completed="+assignment.completed()+
+                        "; progress="+assignment.progress()),ChatFormatting.YELLOW);
+            }else if(action==BUTTON_DEBUG_ADVANCEMENT) {
+                debugClearRequestedAt=0L;
+                MilestoneTaskDefinition task=assignment==null?null:
+                        MilestoneTaskCatalog.get(record,assignment.taskId());
+                if(task instanceof AdvancementTaskDefinition advancement) {
+                    var holder=serverLevel.getServer().getAdvancements().get(advancement.advancementId());
+                    String condition=holder==null?"MISSING from server registry":
+                            player.getAdvancements().getOrStartProgress(holder).isDone()
+                                ?"Already earned by you":"Not earned yet";
+                    debugMessage(player,"Advancement "+advancement.advancementId()+
+                            ": "+condition,holder==null?ChatFormatting.RED:ChatFormatting.AQUA);
+                    debugMessage(player,"Milestone task completed: "+assignment.completed()+
+                            " | Structure: "+StationConstructionManager.isVerified(
+                                    serverLevel.getServer(),record),ChatFormatting.GRAY);
+                }else {
+                    debugMessage(player,task==null
+                            ?"No task assigned. Use New Task after verifying the build."
+                            :"Assigned task is "+task.type()+" (not an advancement).",
+                            ChatFormatting.YELLOW);
+                }
+            }else if(action==BUTTON_DEBUG_CLEAR_PROGRESS) {
+                // Server-side second confirmation as well: forged first packets
+                // cannot silently wipe contributors or task assignments.
+                long now=System.currentTimeMillis();
+                if(debugClearRequestedAt==0L || now-debugClearRequestedAt>10_000L) {
+                    debugClearRequestedAt=now;
+                    debugMessage(player,"Click Clear Progress again within 10s to wipe "+
+                            "this Core's contributions. Earned global unlocks will remain.",
+                            ChatFormatting.RED);
+                    return true;
+                }
+                debugClearRequestedAt=0L;
+                MilestoneGameplayManager.clearContributors(owning,record);
+                debugMessage(player,"Core contribution and task progress cleared. "+
+                        "Global unlocks/rewards were NOT revoked.",ChatFormatting.YELLOW);
+            }else {
+                debugClearRequestedAt=0L;
+                if(action==BUTTON_DEBUG_FAKE_CONTRIBUTOR) {
+                    MilestoneGameplayManager.addFakeContributor(owning,record);
+                    debugMessage(player,"Added one simulated contributor to this Core. "+
+                            "Normal milestone thresholds may unlock.",ChatFormatting.YELLOW);
+                }else {
+                    if(!MilestoneContentConfig.enabled()
+                            || !StationConstructionManager.isVerified(
+                                    serverLevel.getServer(),record)
+                            || !MilestoneContentConfig.prerequisitesMet(
+                                    serverLevel.getServer(),record)) {
+                        debugMessage(player,"Tasks are unavailable: check mod enabled, "+
+                                "structure verification and prerequisite Cores.",
+                                ChatFormatting.YELLOW);
+                        return false;
+                    }
+                    if(action==BUTTON_DEBUG_REROLL_TASK) {
+                        MilestoneRecord updated=MilestoneGameplayManager.rerollPlayerTask(
+                                owning,record,player);
+                        TaskAssignment fresh=updated.assignment(player.getUUID()).orElse(null);
+                        debugMessage(player,"Assigned new test task: "+
+                                (fresh==null?"none":fresh.taskId()),ChatFormatting.GREEN);
+                    }else if(action==BUTTON_DEBUG_RESET_TASK) {
+                        if(assignment==null) {
+                            debugMessage(player,"You have no task to reset.",ChatFormatting.YELLOW);
+                            return false;
+                        }
+                        MilestoneRecord cleared=MilestoneGameplayManager.resetPlayerTask(
+                                owning,record,player.getUUID());
+                        MilestoneManager.save(owning,cleared.withAssignment(assignment.reset()));
+                        debugMessage(player,"Reset progress for task "+assignment.taskId()+
+                                " (and removed your Core contribution).",ChatFormatting.YELLOW);
+                    }else if(action==BUTTON_DEBUG_COMPLETE_TASK) {
+                        if(MilestoneGameplayManager.debugCompletePlayerTask(owning,record,player)) {
+                            debugMessage(player,"Simulated task completion through normal "+
+                                    "rewards and threshold logic.",ChatFormatting.GREEN);
+                        }else {
+                            debugMessage(player,"No incomplete assigned task to finish.",
+                                    ChatFormatting.YELLOW);
+                            return false;
+                        }
+                    }
+                }
+            }
+        }catch(RuntimeException exception) {
+            org.slf4j.LoggerFactory.getLogger(MilestoneMenu.class)
+                    .error("Milestone debug action {} failed for {}",action,player.getScoreboardName(),
+                            exception);
+            debugMessage(player,"Debug action failed: "+exception.getMessage(),ChatFormatting.RED);
+            return false;
+        }
+        broadcastChanges();
+        return true;
+    }
+
+    private static void debugMessage(ServerPlayer player,String message,ChatFormatting color) {
+        player.sendSystemMessage(Component.literal("[Milestone Debug] "+message).withStyle(color));
     }
 
     @Override

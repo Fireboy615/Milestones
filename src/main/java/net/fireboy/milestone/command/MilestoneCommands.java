@@ -10,6 +10,7 @@ import net.fireboy.milestone.milestone.MilestoneManager;
 import net.fireboy.milestone.milestone.MilestoneGameplayManager;
 import net.fireboy.milestone.milestone.MilestoneRecord;
 import net.fireboy.milestone.milestone.MilestoneProgressionManager;
+import net.fireboy.milestone.unlock.MilestoneFeatureLocks;
 import net.fireboy.milestone.milestone.MilestoneUnlock;
 import net.fireboy.milestone.milestone.MilestoneState;
 import net.fireboy.milestone.milestone.MilestoneType;
@@ -260,6 +261,7 @@ public final class MilestoneCommands {
 
         core.setMilestoneState(newState);
         MilestoneManager.updateState(level, core);
+        MilestoneFeatureLocks.applyRecipes(source.getServer(),false,true);
         if (!RegenerationManager.canRegenerate(newState)) {
             RegenerationManager.cancelMilestone(source.getServer(), record.id());
         }
@@ -299,6 +301,7 @@ public final class MilestoneCommands {
 
         MilestoneRecord updated = record.withTypeResetProgress(newType);
         MilestoneManager.save(level, updated);
+        MilestoneFeatureLocks.applyRecipes(source.getServer(),false,true);
 
         source.sendSuccess(
                 () -> Component.literal(

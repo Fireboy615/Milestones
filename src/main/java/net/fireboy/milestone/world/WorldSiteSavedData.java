@@ -43,7 +43,8 @@ public final class WorldSiteSavedData extends SavedData {
             catch (IllegalArgumentException e) { type = MilestoneType.GENERIC; }
             data.cores.add(new CorePlan(t.getInt("Tier"), t.getInt("X"), t.getInt("Z"),
                     type, t.getBoolean("Placed"), t.getBoolean("Placed")
-                    ? BlockPos.of(t.getLong("PlacedPos")) : null));
+                    ? BlockPos.of(t.getLong("PlacedPos")) : null,
+                    t.contains("Dimension") ? t.getString("Dimension") : "minecraft:overworld"));
         }
         return data;
     }
@@ -66,6 +67,7 @@ public final class WorldSiteSavedData extends SavedData {
             t.putInt("X", core.x());
             t.putInt("Z", core.z());
             t.putString("Type", core.type().name());
+            t.putString("Dimension", core.dimension());
             t.putBoolean("Placed", core.placed());
             if (core.placedPos() != null) t.putLong("PlacedPos", core.placedPos().asLong());
             list.add(t);
@@ -94,6 +96,19 @@ public final class WorldSiteSavedData extends SavedData {
         setDirty();
     }
 
+    /** Reconcile only unplaced reservations. Existing placed Cores are immutable. */
+    public void reconcile(List<CorePlan> desired, Set<Integer> configuredTiers) {
+        boolean changed = cores.removeIf(core ->
+                !core.placed() && !configuredTiers.contains(core.tier()));
+        for (CorePlan candidate : desired) {
+            if (cores.stream().noneMatch(existing -> existing.tier() == candidate.tier())) {
+                cores.add(candidate);
+                changed = true;
+            }
+        }
+        if (changed) setDirty();
+    }
+
     public void setExchange(BlockPos pos) { if (exchange == null) { exchange = pos.immutable(); setDirty(); } }
     public void setMission(BlockPos pos) { if (mission == null) { mission = pos.immutable(); setDirty(); } }
 
@@ -103,7 +118,7 @@ public final class WorldSiteSavedData extends SavedData {
             CorePlan core = cores.get(i);
             if (core.tier() == tier && !core.placed()
                     && (core.x() != x || core.z() != z)) {
-                cores.set(i, new CorePlan(core.tier(), x, z, core.type(), false, null));
+                cores.set(i, new CorePlan(core.tier(), x, z, core.type(), false, null, core.dimension()));
                 setDirty();
                 break;
             }
@@ -114,12 +129,18 @@ public final class WorldSiteSavedData extends SavedData {
         for (int i = 0; i < cores.size(); i++) {
             CorePlan core = cores.get(i);
             if (core.tier() == tier && !core.placed()) {
-                cores.set(i, new CorePlan(core.tier(), core.x(), core.z(), core.type(), true, pos.immutable()));
+                cores.set(i, new CorePlan(core.tier(), core.x(), core.z(), core.type(), true, pos.immutable(), core.dimension()));
                 setDirty();
                 break;
             }
         }
     }
 
-    public record CorePlan(int tier, int x, int z, MilestoneType type, boolean placed, BlockPos placedPos) { }
+    public record CorePlan(int tier, int x, int z, MilestoneType type,
+                           boolean placed, BlockPos placedPos, String dimension) {
+        public CorePlan(int tier, int x, int z, MilestoneType type,
+                        boolean placed, BlockPos placedPos) {
+            this(tier, x, z, type, placed, placedPos, "minecraft:overworld");
+        }
+    }
 }

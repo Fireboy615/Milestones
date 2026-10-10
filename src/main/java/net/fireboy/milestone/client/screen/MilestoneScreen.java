@@ -13,6 +13,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.world.entity.player.Inventory;
 
@@ -44,10 +45,80 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
     private Button nextButton;
     private Button claimButton;
     private Button verifyButton;
+    private Button adminButton;
+    private Button debugButton;
+    private Button clearDebugButton;
+    private final java.util.List<Button> debugActions=new java.util.ArrayList<>();
+    private boolean debugMode;
+    private boolean confirmingClear;
+
+    /** Same menu stays open: debug actions still use authenticated server
+     * container button clicks, not a separate client-trusted command packet. */
+    private void showDebug(boolean open) {
+        if(open && !menu.adminAccess())return;
+        debugMode=open;
+        confirmingClear=false;
+        clearWidgets();
+        init();
+    }
+    private void debugAction(int action) {
+        if(!menu.adminAccess())return;
+        if(action!=MilestoneMenu.BUTTON_DEBUG_CLEAR_PROGRESS) {
+            confirmingClear=false;
+            if(clearDebugButton!=null)
+                clearDebugButton.setMessage(Component.literal("Clear Core Progress"));
+        }
+        stationAction(action);
+    }
+    private void addDebugButton(String title,int x,int y,int width,int action) {
+        Button button=addRenderableWidget(Button.builder(Component.literal(title),
+                ignored->debugAction(action))
+                .bounds(leftPos+x,topPos+y,width,17).build());
+        debugActions.add(button);
+    }
+    private void debugClear() {
+        if(!menu.adminAccess())return;
+        // First click asks the server to arm a 10s confirmation. The
+        // second click must pass the server's independent confirmation.
+        if(!confirmingClear) {
+            confirmingClear=true;
+            if(clearDebugButton!=null)
+                clearDebugButton.setMessage(Component.literal("CONFIRM Clear Progress"));
+        }else{
+            confirmingClear=false;
+            if(clearDebugButton!=null)
+                clearDebugButton.setMessage(Component.literal("Clear Core Progress"));
+        }
+        stationAction(MilestoneMenu.BUTTON_DEBUG_CLEAR_PROGRESS);
+    }
 
     @Override
     protected void init() {
         super.init();
+        previousButton=null;
+        nextButton=null;
+        claimButton=null;
+        verifyButton=null;
+        adminButton=null;
+        debugButton=null;
+        clearDebugButton=null;
+        debugActions.clear();
+        if(debugMode) {
+            addRenderableWidget(Button.builder(Component.literal("< Back"),
+                    b->showDebug(false)).bounds(leftPos+8,topPos+18,47,15).build());
+            addDebugButton("Core Report",8,62,77,MilestoneMenu.BUTTON_DEBUG_REPORT);
+            addDebugButton("Check Adv.",91,62,77,MilestoneMenu.BUTTON_DEBUG_ADVANCEMENT);
+            addDebugButton("New Task",8,83,77,MilestoneMenu.BUTTON_DEBUG_REROLL_TASK);
+            addDebugButton("Reset Task",91,83,77,MilestoneMenu.BUTTON_DEBUG_RESET_TASK);
+            addDebugButton("Finish Task",8,104,77,MilestoneMenu.BUTTON_DEBUG_COMPLETE_TASK);
+            addDebugButton("+1 Contributor",91,104,77,
+                    MilestoneMenu.BUTTON_DEBUG_FAKE_CONTRIBUTOR);
+            clearDebugButton=addRenderableWidget(Button.builder(
+                    Component.literal("Clear Core Progress"),b->debugClear())
+                    .bounds(leftPos+8,topPos+125,160,17).build());
+            debugActions.add(clearDebugButton);
+            return;
+        }
         previousButton = addRenderableWidget(Button.builder(Component.literal("<"),
                 button -> switchMilestone(MilestoneMenu.BUTTON_PREVIOUS))
                 .bounds(leftPos + 136, topPos + 4, 16, 13).build());
@@ -57,9 +128,16 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
         claimButton = addRenderableWidget(Button.builder(Component.literal("Get Schematic"),
                 button -> stationAction(MilestoneMenu.BUTTON_CLAIM_SCHEMATIC))
                 .bounds(leftPos + 8, topPos + 119, 82, 18).build());
+        adminButton = addRenderableWidget(Button.builder(Component.literal("Config"),
+                button -> {
+                    if (minecraft != null && menu.adminAccess())
+                        minecraft.setScreen(new MilestoneConfigScreen());
+                }).bounds(leftPos + 121, topPos + 18, 47, 14).build());
         verifyButton = addRenderableWidget(Button.builder(Component.literal("Verify Build"),
                 button -> stationAction(MilestoneMenu.BUTTON_VERIFY_STRUCTURE))
                 .bounds(leftPos + 93, topPos + 119, 75, 18).build());
+        debugButton=addRenderableWidget(Button.builder(Component.literal("Debug"),
+                b->showDebug(true)).bounds(leftPos+121,topPos+35,47,14).build());
     }
 
     private void stationAction(int action) {
@@ -87,6 +165,14 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         if (previousButton != null) previousButton.active = menu.availableCount() > 1;
+        if (adminButton != null) adminButton.visible = menu.adminAccess();
+        if (debugButton != null) debugButton.visible = menu.adminAccess();
+        for(Button debugAction:debugActions)
+            debugAction.active=menu.adminAccess() && menu.availableCount()>0;
+        if(debugMode && !menu.adminAccess()) {
+            showDebug(false);
+            return;
+        }
         if (nextButton != null) nextButton.active = menu.availableCount() > 1;
         if (claimButton != null) claimButton.active = menu.availableCount() > 0;
         if (verifyButton != null) verifyButton.active =
@@ -98,6 +184,13 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
     @Override
     protected void renderBg(GuiGraphics graphics, float partialTick, int mouseX, int mouseY) {
         graphics.blit(BACKGROUND, leftPos, topPos, 0, 0, imageWidth, imageHeight);
+        if(debugMode){
+            // Cover the normal task/structure widgets while retaining the
+            // vanilla player inventory and the original container session.
+            graphics.fill(leftPos+5,topPos+17,leftPos+171,topPos+143,0xFFE4E4E4);
+            graphics.fill(leftPos+5,topPos+17,leftPos+171,topPos+18,0xFF777777);
+            return;
+        }
 
         MilestoneTaskDefinition task = menu.taskDefinition();
         if (menu.structureVerified() && task instanceof ItemSubmissionTaskDefinition && !menu.taskComplete()) {
@@ -125,6 +218,21 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
 
     @Override
     protected void renderLabels(GuiGraphics graphics, int mouseX, int mouseY) {
+        if(debugMode) {
+            graphics.drawString(font,"OP Debug",63,22,0xFF514521,false);
+            if(menu.availableCount()==0) {
+                graphics.drawString(font,"No discovered Cores",8,43,INCOMPLETE_TEXT,false);
+            }else{
+                graphics.drawString(font,"Core "+(menu.coreTier()+1)+"  |  "+
+                        pretty(menu.milestoneState().name()),8,37,VANILLA_TEXT,false);
+                String detail="Verified: "+(menu.structureVerified()?"yes":"no")
+                        +"  Task: "+(menu.taskComplete()?"done":"pending");
+                graphics.drawString(font,detail,8,48,MUTED_TEXT,false);
+            }
+            graphics.drawString(font,playerInventoryTitle,inventoryLabelX,
+                    inventoryLabelY,VANILLA_TEXT,false);
+            return;
+        }
         MilestoneTaskDefinition task = menu.taskDefinition();
 
         // Station-owned UI: a selectable view of all discovered Cores.
@@ -162,6 +270,8 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
         }
 
         graphics.drawString(font, taskHeading(task), 8, 34, VANILLA_TEXT, false);
+        if (task instanceof ItemSubmissionTaskDefinition submission)
+            graphics.renderItem(new ItemStack(submission.item()), 68, 30);
 
         int clueWidth = task instanceof ItemSubmissionTaskDefinition && !menu.taskComplete() ? 136 : 160;
         String clue = task == null ? "No task assigned." : task.clue();
@@ -202,6 +312,24 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
         // the Journal until the expanded Station UI arrives.
 
         graphics.drawString(font, playerInventoryTitle, inventoryLabelX, inventoryLabelY, VANILLA_TEXT, false);
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX,double mouseY,int button) {
+        if(debugMode && button==0
+                && mouseX>=leftPos+MilestoneMenu.SUBMISSION_SLOT_X
+                && mouseX<leftPos+MilestoneMenu.SUBMISSION_SLOT_X+18
+                && mouseY>=topPos+MilestoneMenu.SUBMISSION_SLOT_Y
+                && mouseY<topPos+MilestoneMenu.SUBMISSION_SLOT_Y+18) {
+            // This region is hidden behind Debug's readout/actions. Let
+            // screen buttons work first, otherwise consume the slot click.
+            for(var child:children()){
+                if(child instanceof Button action && action.isMouseOver(mouseX,mouseY)
+                        && action.mouseClicked(mouseX,mouseY,button))return true;
+            }
+            return true;
+        }
+        return super.mouseClicked(mouseX,mouseY,button);
     }
 
     private static String taskHeading(MilestoneTaskDefinition task) {

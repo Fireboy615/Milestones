@@ -11,6 +11,8 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.item.Items;
 
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -212,8 +214,20 @@ public final class MilestoneTaskCatalog {
         };
     }
 
+    /**
+     * Stable GUI indices include all known definitions, independent of current
+     * per-Core task selection, so editing a task pool cannot hide active tasks.
+     */
+    private static List<MilestoneTaskDefinition> knownTasks(
+            MilestoneContentConfig.Snapshot snapshot, MilestoneType type) {
+        LinkedHashMap<String, MilestoneTaskDefinition> result = new LinkedHashMap<>();
+        for (MilestoneTaskDefinition def : tasksFor(type)) result.put(def.id(), def);
+        for (var entry : snapshot.tasks().values()) result.put(entry.task().id(), entry.task());
+        return new ArrayList<>(result.values());
+    }
+
     public static int indexOf(MilestoneRecord record, String id) {
-        List<MilestoneTaskDefinition> tasks = tasksFor(record);
+        var tasks = knownTasks(MilestoneContentConfig.server(), record.type());
         for (int i = 0; i < tasks.size(); i++) {
             if (tasks.get(i).id().equals(id)) return i;
         }
@@ -221,8 +235,7 @@ public final class MilestoneTaskCatalog {
     }
 
     public static MilestoneTaskDefinition byIndex(MilestoneType type, int tier, int index) {
-        List<MilestoneTaskDefinition> tasks = MilestoneContentConfig.pool(
-                MilestoneContentConfig.client(), tier, type, tasksFor(type));
+        var tasks = knownTasks(MilestoneContentConfig.client(), type);
         return index >= 0 && index < tasks.size() ? tasks.get(index) : null;
     }
 
@@ -242,10 +255,9 @@ public final class MilestoneTaskCatalog {
     }
 
     public static MilestoneTaskDefinition get(MilestoneRecord record, String id) {
-        for (MilestoneTaskDefinition definition : tasksFor(record)) {
-            if (definition.id().equals(id)) {
-                return definition;
-            }
+        for (MilestoneTaskDefinition definition : knownTasks(MilestoneContentConfig.server(),
+                record.type())) {
+            if (definition.id().equals(id)) return definition;
         }
         return null;
     }

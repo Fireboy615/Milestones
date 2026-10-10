@@ -1,5 +1,6 @@
 {
-  "_help": "Six persistent Core slots, tiers 0-5. Empty task_ids selects custom tasks matching difficulty/categories or falls back to the original tasks. min_distance/max_distance=0 uses automatic spawn rings. 'generated' schematic uses the standard chamber.",
+  "_help": "Each Core can use task_mode preset (difficulty+categories filters) or manual (exact task_ids). Dimension, biomes and depth control generation of NEW sites only. rewards: XP/items per successful contributor; console commands once at final Core completion.",
+  "enabled": true,
   "cores": [
     {
       "tier": 0,
@@ -15,7 +16,15 @@
       "categories": [],
       "task_ids": [],
       "schematic": "generated",
-      "color": "#39D8DB"
+      "color": "#39D8DB",
+      "task_mode": "preset",
+      "requires_completed_cores": [],
+      "dimension": "minecraft:overworld",
+      "allowed_biomes": [],
+      "blocked_biomes": [],
+      "reward_xp": 0,
+      "reward_items": [],
+      "reward_commands": []
     },
     {
       "tier": 1,
@@ -27,11 +36,34 @@
       "min_distance": 0,
       "max_distance": 0,
       "depth_fraction": 0.235,
-      "difficulty": "normal",
+      "difficulty": "medium",
       "categories": [],
-      "task_ids": [],
+      "task_ids": [
+        "nether_obsidian",
+        "nether_gold",
+        "nether_pearls",
+        "nether_diamond",
+        "nether_golden_apple",
+        "nether_flint_steel",
+        "nether_hunt_enderman",
+        "nether_hunt_witch",
+        "nether_hunt_evoker",
+        "nether_hunt_ravager",
+        "nether_advance_diamond",
+        "nether_advance_hot_stuff",
+        "nether_advance_voluntary_exile",
+        "nether_advance_hero"
+      ],
       "schematic": "generated",
-      "color": "#FF7038"
+      "color": "#FF7038",
+      "task_mode": "manual",
+      "requires_completed_cores": [],
+      "dimension": "minecraft:overworld",
+      "allowed_biomes": [],
+      "blocked_biomes": [],
+      "reward_xp": 0,
+      "reward_items": [],
+      "reward_commands": []
     },
     {
       "tier": 2,
@@ -43,11 +75,19 @@
       "min_distance": 0,
       "max_distance": 0,
       "depth_fraction": 0.415,
-      "difficulty": "normal",
+      "difficulty": "medium",
       "categories": [],
       "task_ids": [],
       "schematic": "generated",
-      "color": "#7CD992"
+      "color": "#7CD992",
+      "task_mode": "preset",
+      "requires_completed_cores": [],
+      "dimension": "minecraft:overworld",
+      "allowed_biomes": [],
+      "blocked_biomes": [],
+      "reward_xp": 0,
+      "reward_items": [],
+      "reward_commands": []
     },
     {
       "tier": 3,
@@ -63,7 +103,15 @@
       "categories": [],
       "task_ids": [],
       "schematic": "generated",
-      "color": "#8A94F7"
+      "color": "#8A94F7",
+      "task_mode": "preset",
+      "requires_completed_cores": [],
+      "dimension": "minecraft:overworld",
+      "allowed_biomes": [],
+      "blocked_biomes": [],
+      "reward_xp": 0,
+      "reward_items": [],
+      "reward_commands": []
     },
     {
       "tier": 4,
@@ -75,11 +123,19 @@
       "min_distance": 0,
       "max_distance": 0,
       "depth_fraction": 0.775,
-      "difficulty": "hard",
+      "difficulty": "extreme",
       "categories": [],
       "task_ids": [],
       "schematic": "generated",
-      "color": "#FFCF63"
+      "color": "#FFCF63",
+      "task_mode": "preset",
+      "requires_completed_cores": [],
+      "dimension": "minecraft:overworld",
+      "allowed_biomes": [],
+      "blocked_biomes": [],
+      "reward_xp": 0,
+      "reward_items": [],
+      "reward_commands": []
     },
     {
       "tier": 5,
@@ -95,7 +151,27 @@
       "categories": [],
       "task_ids": [],
       "schematic": "generated",
-      "color": "#C47DFA"
+      "color": "#C47DFA",
+      "task_mode": "preset",
+      "requires_completed_cores": [],
+      "dimension": "minecraft:overworld",
+      "allowed_biomes": [],
+      "blocked_biomes": [],
+      "reward_xp": 0,
+      "reward_items": [],
+      "reward_commands": []
     }
-  ]
+  ],
+  "features": [],
+  "shop": {
+    "credits_per_contribution": 10,
+    "offers": [],
+    "max_per_rarity": {
+      "common": 6,
+      "uncommon": 5,
+      "rare": 4,
+      "epic": 3,
+      "legendary": 2
+    }
+  }
 }

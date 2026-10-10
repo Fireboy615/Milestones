@@ -3,6 +3,8 @@ package net.fireboy.milestone.milestone;
 import net.fireboy.milestone.blockentity.MilestoneCoreBlockEntity;
 import net.fireboy.milestone.menu.MilestoneMenu;
 import net.fireboy.milestone.server.config.MilestoneContentConfig;
+import net.fireboy.milestone.unlock.MilestoneFeatureLocks;
+import net.fireboy.milestone.shop.MilestoneShop;
 import net.fireboy.milestone.resonance.RegenerationManager;
 import net.fireboy.milestone.resonance.RetractionManager;
 import net.fireboy.milestone.task.AdvancementTaskDefinition;
@@ -13,6 +15,7 @@ import net.fireboy.milestone.task.MilestoneTaskDefinition;
 import net.fireboy.milestone.task.TaskAssignment;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
@@ -36,6 +39,10 @@ public final class MilestoneGameplayManager {
 
     /** The Core only discovers the location. All tasks now live at the Mission Station. */
     public static void discoverCore(ServerLevel level, BlockPos corePos, ServerPlayer player) {
+        if (!MilestoneContentConfig.enabled()) {
+            player.sendSystemMessage(Component.literal("Milestones are disabled by the server."));
+            return;
+        }
         MilestoneRecord record = recordAt(level, corePos);
         if (record == null) {
             player.sendSystemMessage(Component.literal("This Core is not registered."));
@@ -69,7 +76,7 @@ public final class MilestoneGameplayManager {
                 Component.literal("Mission Station")),
                 buffer -> {
                     buffer.writeBlockPos(stationPos);
-                    buffer.writeUtf(MilestoneContentConfig.server().payload(), 65535);
+                    buffer.writeUtf(MilestoneContentConfig.publicPayload(), 65535);
                 });
     }
 
@@ -112,6 +119,7 @@ public final class MilestoneGameplayManager {
 
     private static void submitItemForRecord(ServerLevel level, MilestoneRecord record,
                                             ServerPlayer player, ItemStack stack) {
+        if (!MilestoneContentConfig.enabled()) return;
         if (!MilestoneContentConfig.prerequisitesMet(level.getServer(), record)) return;
         if (!StationConstructionManager.isVerified(level.getServer(), record)) {
             player.sendSystemMessage(Component.literal("Build and verify the schematic at the Mission Station before contributing.")
@@ -145,6 +153,7 @@ public final class MilestoneGameplayManager {
     }
 
     public static MilestoneRecord ensureAssignment(ServerLevel level, MilestoneRecord record, ServerPlayer player) {
+        if (!MilestoneContentConfig.enabled()) return record;
         if (record.discoveredBy() == null
                 || !MilestoneContentConfig.prerequisitesMet(level.getServer(), record)
                 || !StationConstructionManager.isVerified(level.getServer(), record)) {
@@ -234,7 +243,9 @@ public final class MilestoneGameplayManager {
 
     public static MilestoneRecord resetPlayerTask(ServerLevel level, MilestoneRecord record, UUID playerId) {
         MilestoneRecord updated = record.resetAssignment(playerId);
-        return MilestoneManager.save(level, normalizeProgressState(level, updated));
+        var saved = MilestoneManager.save(level, normalizeProgressState(level, updated));
+        MilestoneFeatureLocks.applyRecipes(level.getServer(),false,true);
+        return saved;
     }
 
     /** Debug/admin reroll that deliberately advances to a different task when possible. */
@@ -242,12 +253,16 @@ public final class MilestoneGameplayManager {
         TaskAssignment existing = record.assignment(player.getUUID()).orElse(null);
         String previousId = existing == null ? "" : existing.taskId();
 
+        // Resolve the replacement BEFORE touching persistent data. Otherwise
+        // an empty/unavailable task pool would erase the old assignment when
+        // choose/chooseDifferent throws during an OP debug reroll.
+        MilestoneTaskDefinition definition = previousId.isEmpty()
+                ? MilestoneTaskCatalog.choose(record, player)
+                : MilestoneTaskCatalog.chooseDifferent(record, player, previousId);
+
         MilestoneRecord cleared = record.resetAssignment(player.getUUID());
         cleared = MilestoneManager.save(level, normalizeProgressState(level, cleared));
-
-        MilestoneTaskDefinition definition = previousId.isEmpty()
-                ? MilestoneTaskCatalog.choose(cleared, player)
-                : MilestoneTaskCatalog.chooseDifferent(cleared, player, previousId);
+        MilestoneFeatureLocks.applyRecipes(level.getServer(),false,true);
 
         TaskAssignment replacement = new TaskAssignment(
                 player.getUUID(),
@@ -257,6 +272,22 @@ public final class MilestoneGameplayManager {
                 -1L
         );
         return MilestoneManager.save(level, cleared.withAssignment(replacement));
+    }
+
+    /**
+     * Admin-only testing entry point, called only after the Mission Station
+     * server handler checks the operator and valid station menu.
+     * Uses normal completion, rewards and threshold handling rather than
+     * directly mutating the completed flag.
+     */
+    public static boolean debugCompletePlayerTask(ServerLevel level,
+            MilestoneRecord record, ServerPlayer player) {
+        TaskAssignment assignment=record.assignment(player.getUUID()).orElse(null);
+        if(assignment==null || assignment.completed())return false;
+        completeContribution(level,record,player,
+                Component.literal("[Milestone Debug] Task completed through OP testing.")
+                        .withStyle(ChatFormatting.YELLOW));
+        return true;
     }
 
     public static MilestoneRecord addFakeContributor(ServerLevel level, MilestoneRecord record) {
@@ -277,7 +308,9 @@ public final class MilestoneGameplayManager {
 
     public static MilestoneRecord clearContributors(ServerLevel level, MilestoneRecord record) {
         MilestoneRecord updated = record.clearContributionProgress();
-        return MilestoneManager.save(level, updated);
+        var saved = MilestoneManager.save(level, updated);
+        MilestoneFeatureLocks.applyRecipes(level.getServer(),false,true);
+        return saved;
     }
 
     public static MilestoneRecord recordAt(ServerLevel level, BlockPos corePos) {
@@ -290,6 +323,7 @@ public final class MilestoneGameplayManager {
 
     /** Each killing blow adds one to the assigned player's hunt progress at every eligible Core. */
     public static void onPlayerKill(ServerPlayer player, EntityType<?> killedType) {
+        if (!MilestoneContentConfig.enabled()) return;
         MinecraftServer server = player.getServer();
         if (server == null) return;
         for (MilestoneRecord record : new ArrayList<>(MilestoneManager.data(server).all())) {
@@ -330,6 +364,7 @@ public final class MilestoneGameplayManager {
             Predicate<MilestoneTaskDefinition> matcher,
             Component successMessage
     ) {
+        if (!MilestoneContentConfig.enabled()) return;
         MinecraftServer server = player.getServer();
         if (server == null) {
             return;
@@ -370,6 +405,7 @@ public final class MilestoneGameplayManager {
         int after = record.contributorCount();
 
         player.sendSystemMessage(successMessage);
+        if (after > before) rewardContribution(level.getServer(), record, player);
         broadcast(level.getServer(), Component.literal(
                 player.getScoreboardName() + " contributed to " + record.type().displayName() +
                         " (" + after + "/" + record.type().minimumContributors() + ")."
@@ -457,8 +493,45 @@ public final class MilestoneGameplayManager {
         if (after >= record.type().finalThreshold()
                 && record.state() != MilestoneState.COMPLETED) {
             record = MilestoneManager.setState(level, record, MilestoneState.COMPLETED);
+            completeCoreRewards(level.getServer(), record);
+            MilestoneFeatureLocks.applyRecipes(level.getServer(),false,true);
         }
         return record;
+    }
+
+    /** Individual prizes for helping a shared Core (only first successful contribution). */
+    private static void rewardContribution(MinecraftServer server, MilestoneRecord record,
+                                           ServerPlayer contributor) {
+        MilestoneShop.rewardContribution(contributor);
+        var core = MilestoneContentConfig.server().core(record.coreTier());
+        if (core == null) return;
+        if (core.rewardXp() > 0) contributor.giveExperiencePoints(core.rewardXp());
+        for (var reward : core.rewardItems()) {
+            var item = BuiltInRegistries.ITEM.get(reward.item());
+            int left = reward.count();
+            while (left > 0) {
+                int amount = Math.min(left, item.getDefaultMaxStackSize());
+                contributor.getInventory().placeItemBackInInventory(new ItemStack(item, amount));
+                left -= amount;
+            }
+        }
+    }
+
+    /** Admin-only config commands, fired exactly when the contributor threshold crosses completion. */
+    private static void completeCoreRewards(MinecraftServer server, MilestoneRecord record) {
+        var core = MilestoneContentConfig.server().core(record.coreTier());
+        if (core == null) return;
+        for (String command : core.rewardCommands()) {
+            String trimmed = command.startsWith("/") ? command.substring(1) : command;
+            if (trimmed.isBlank()) continue;
+            try {
+                server.getCommands().performPrefixedCommand(
+                        server.createCommandSourceStack().withSuppressedOutput(), trimmed);
+            } catch (Exception exception) {
+                org.slf4j.LoggerFactory.getLogger(MilestoneGameplayManager.class)
+                        .error("Milestone Core {} reward command failed: {}", record.id(), trimmed, exception);
+            }
+        }
     }
 
     private static MilestoneRecord normalizeProgressState(ServerLevel level, MilestoneRecord record) {

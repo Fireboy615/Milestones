@@ -3,6 +3,8 @@ package net.fireboy.milestone.block;
 import com.mojang.serialization.MapCodec;
 import net.fireboy.milestone.registry.ModBlocks;
 import net.fireboy.milestone.milestone.MilestoneGameplayManager;
+import net.fireboy.milestone.network.MilestoneShopNetwork;
+import net.neoforged.neoforge.network.PacketDistributor;
 import net.fireboy.milestone.blockentity.MissionStationBlockEntity;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.core.BlockPos;
@@ -80,7 +82,11 @@ public class WorldStationBlock extends BaseEntityBlock {
             MilestoneGameplayManager.openMissionStation(serverLevel, pos, serverPlayer);
             return;
         }
-        serverPlayer.sendSystemMessage(Component.literal(
-                "Resonant Exchange: the Marks shop and rotating stock are not implemented yet."));
+        if (state.is(ModBlocks.RESONANT_EXCHANGE.get())) {
+            // Open the shop on the interacting player's client. The server
+            // separately verifies this block and proximity on each purchase.
+            PacketDistributor.sendToPlayer(serverPlayer,
+                    new MilestoneShopNetwork.OpenShop(pos.immutable()));
+        }
     }
 }

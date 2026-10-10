@@ -10,6 +10,9 @@ import net.fireboy.milestone.registry.ModBlocks;
 import net.fireboy.milestone.world.WorldSiteSavedData;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.QuartPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.BiomeTags;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -31,7 +34,6 @@ import java.util.Random;
 public final class WorldSiteManager {
     private static final SavedData.Factory<WorldSiteSavedData> FACTORY =
             new SavedData.Factory<>(WorldSiteSavedData::create, WorldSiteSavedData::load);
-    private static final int CORE_COUNT = 6;
     private static final int CHECK_INTERVAL = 100;
     private static final int SPAWN_SITE_RADIUS = 100;
     private static final long EXCHANGE_SALT = 0x59A3B13L;
@@ -45,64 +47,119 @@ public final class WorldSiteManager {
 
     public static void onServerTick(ServerTickEvent.Post event) {
         MinecraftServer server = event.getServer();
+        if (!MilestoneContentConfig.enabled()) return;
         if (server.getTickCount() % CHECK_INTERVAL != 0) return;
         ServerLevel level = server.overworld();
         WorldSiteSavedData data = data(server);
-        if (!data.initialized()) data.initialize(planCores(level));
+        if (!data.initialized()) data.initialize(planCores(server, List.of()));
+        else data.reconcile(planCores(server, data.cores()),
+                MilestoneContentConfig.server().cores().keySet());
         if (data.exchange().isEmpty()) trySpawnStation(level, data, true);
         if (data.mission().isEmpty()) trySpawnStation(level, data, false);
         for (WorldSiteSavedData.CorePlan plan : data.cores()) {
+            ServerLevel coreLevel = levelFor(server, plan.dimension());
+            if (coreLevel == null) continue;
+            if (!plan.placed()) {
+                var configured = MilestoneContentConfig.server().core(plan.tier());
+                if (configured == null || !configured.enabled()) continue;
+            }
             if (plan.placed()) {
+                upgradeSavedCoreTier(server, coreLevel, plan);
                 if (!data.autoTendrilStarted(plan.tier())
                         || !data.autoTendrilWorldAged(plan.tier())) {
-                    tryStartAutomaticTendril(level, data, plan);
+                    tryStartAutomaticTendril(coreLevel, data, plan);
                 }
                 continue;
             }
             // Existing reservations are always tried first, including lakebeds,
             // rivers and ocean floors. Only truly unsuitable chambers relocate.
-            trySpawnCore(level, data, plan);
+            trySpawnCore(coreLevel, data, plan);
+        }
+    }
+
+    /** One-time migration of legacy saved Cores created before per-Core tier identity existed. */
+    private static void upgradeSavedCoreTier(MinecraftServer server, ServerLevel level,
+                                             WorldSiteSavedData.CorePlan plan) {
+        if (plan.placedPos() == null) return;
+        for (MilestoneRecord record : MilestoneManager.data(server).all()) {
+            if (record.coreTier() < 0
+                    && record.corePos().equals(plan.placedPos())
+                    && record.dimension().equals(plan.dimension())) {
+                MilestoneManager.save(level, record.withCoreTier(plan.tier()));
+                return;
+            }
         }
     }
 
     /** Persist X/Z reservations once; actual vertical placement needs generated terrain. */
-    private static List<WorldSiteSavedData.CorePlan> planCores(ServerLevel level) {
-        BlockPos spawn = level.getSharedSpawnPos();
-        double borderRadius = level.getWorldBorder().getSize() / 2.0D;
-        int maxRadius = (int) Math.min(8000.0D, Math.max(450.0D, borderRadius * 0.72D));
+    private static ServerLevel levelFor(MinecraftServer server, String dimension) {
+        ResourceLocation id = ResourceLocation.tryParse(dimension);
+        return id == null ? null : server.getLevel(ResourceKey.create(Registries.DIMENSION, id));
+    }
+
+    private static List<Integer> configuredTiers() {
+        return MilestoneContentConfig.server().cores().keySet().stream().sorted().toList();
+    }
+
+    private static int automaticInner(int maxRadius, int tier) {
+        List<Integer> tiers = configuredTiers();
+        int rank = Math.max(0, tiers.indexOf(tier));
+        return 200 + (maxRadius - 200) * rank / Math.max(1, tiers.size());
+    }
+
+    private static int automaticOuter(int maxRadius, int tier) {
+        List<Integer> tiers = configuredTiers();
+        int rank = Math.max(0, tiers.indexOf(tier));
+        return 200 + (maxRadius - 200) * (rank + 1) / Math.max(1, tiers.size());
+    }
+
+    /** Plan only new tiers; all existing reservations keep their original positions. */
+    private static List<WorldSiteSavedData.CorePlan> planCores(MinecraftServer server,
+                                                                List<WorldSiteSavedData.CorePlan> existing) {
+        // Deleted *unplaced* reservations must not be reintroduced by reconcile.
+        // Keep placed sites even if an offline config edit removed their profile.
         List<WorldSiteSavedData.CorePlan> plans = new ArrayList<>();
-        Random random = new Random(level.getSeed() ^ 0x71A5D0C01L);
-        for (int tier = 0; tier < CORE_COUNT; tier++) {
+        for (var plan : existing)
+            if (plan.placed() || MilestoneContentConfig.server().cores().containsKey(plan.tier()))
+                plans.add(plan);
+        for (int tier : configuredTiers()) {
             var settings = MilestoneContentConfig.server().core(tier);
-            if (settings != null && !settings.enabled()) continue;
-            int inner = settings != null && settings.minDistance() > 0
-                    ? settings.minDistance() : 200 + (maxRadius - 200) * tier / CORE_COUNT;
-            int outer = settings != null && settings.maxDistance() > 0
-                    ? settings.maxDistance() : 200 + (maxRadius - 200) * (tier + 1) / CORE_COUNT;
-            int x = spawn.getX();
-            int z = spawn.getZ();
+            if (settings == null || !settings.enabled()) continue;
+            if (plans.stream().anyMatch(plan -> plan.tier() == tier)) continue;
+            String dimension = settings.dimension();
+            ServerLevel level = levelFor(server, dimension);
+            if (level == null) continue;
+            BlockPos spawn = level.getSharedSpawnPos();
+            int maxRadius = maxCoreRadius(level);
+            int inner = settings.minDistance() > 0
+                    ? settings.minDistance() : automaticInner(maxRadius, tier);
+            int outer = settings.maxDistance() > 0
+                    ? settings.maxDistance() : automaticOuter(maxRadius, tier);
+            // Per-tier RNG is stable even if other profiles are added or deleted.
+            Random random = new Random(level.getSeed() ^ 0x71A5D0C01L
+                    ^ ((long) tier * 0x9E3779B97F4A7C15L));
             for (int attempt = 0; attempt < 768; attempt++) {
                 double angle = random.nextDouble() * Math.PI * 2.0D;
                 int distance = inner + random.nextInt(Math.max(1, outer - inner + 1));
-                int candidateX = spawn.getX() + (int) Math.round(Math.cos(angle) * distance);
-                int candidateZ = spawn.getZ() + (int) Math.round(Math.sin(angle) * distance);
-                BlockPos candidate = new BlockPos(candidateX, level.getSeaLevel(), candidateZ);
+                int x = spawn.getX() + (int) Math.round(Math.cos(angle) * distance);
+                int z = spawn.getZ() + (int) Math.round(Math.sin(angle) * distance);
+                BlockPos candidate = new BlockPos(x, level.getSeaLevel(), z);
                 if (!level.getWorldBorder().isWithinBounds(candidate)
-                        || !landBiomeAt(level, candidateX, candidateZ)) continue;
+                        || !siteBiomeAllowed(level, x, z, settings)) continue;
                 boolean tooClose = false;
                 for (WorldSiteSavedData.CorePlan prior : plans) {
-                    long dx = (long) candidateX - prior.x();
-                    long dz = (long) candidateZ - prior.z();
-                    if (dx * dx + dz * dz < 200L * 200L) { tooClose = true; break; }
+                    if (!prior.dimension().equals(dimension)) continue;
+                    long dx = (long) x - prior.x(), dz = (long) z - prior.z();
+                    if (dx * dx + dz * dz < 200L * 200L) {
+                        tooClose = true;
+                        break;
+                    }
                 }
                 if (tooClose) continue;
-                x = candidateX;
-                z = candidateZ;
+                plans.add(new WorldSiteSavedData.CorePlan(tier, x, z,
+                        settings.profile(), false, null, dimension));
                 break;
             }
-            MilestoneType type = settings != null ? settings.profile()
-                    : tier == 1 ? MilestoneType.NETHER_GATE : MilestoneType.GENERIC;
-            plans.add(new WorldSiteSavedData.CorePlan(tier, x, z, type, false, null));
         }
         return plans;
     }
@@ -199,9 +256,9 @@ public final class WorldSiteManager {
         int maxRadius = maxCoreRadius(level);
         var settings = MilestoneContentConfig.server().core(plan.tier());
         int inner = settings != null && settings.minDistance() > 0
-                ? settings.minDistance() : 200 + (maxRadius - 200) * plan.tier() / CORE_COUNT;
+                ? settings.minDistance() : automaticInner(maxRadius, plan.tier());
         int outer = settings != null && settings.maxDistance() > 0
-                ? settings.maxDistance() : 200 + (maxRadius - 200) * (plan.tier() + 1) / CORE_COUNT;
+                ? settings.maxDistance() : automaticOuter(maxRadius, plan.tier());
         BlockPos spawn = level.getSharedSpawnPos();
         long salt = ((long) plan.x() << 32) ^ (plan.z() & 0xFFFFFFFFL)
                 ^ ((long) plan.tier() * 0x9E3779B97F4A7C15L);
@@ -213,10 +270,10 @@ public final class WorldSiteManager {
             int z = spawn.getZ() + (int) Math.round(Math.sin(angle) * distance);
             if ((x == plan.x() && z == plan.z())
                     || !level.getWorldBorder().isWithinBounds(new BlockPos(x, level.getSeaLevel(), z))
-                    || !landBiomeAt(level, x, z)) continue;
+                    || !siteBiomeAllowed(level, x, z, settings)) continue;
             boolean overlaps = false;
             for (WorldSiteSavedData.CorePlan other : data.cores()) {
-                if (other.tier() == plan.tier()) continue;
+                if (other.tier() == plan.tier() || !other.dimension().equals(plan.dimension())) continue;
                 long dx = (long) x - other.x();
                 long dz = (long) z - other.z();
                 if (dx * dx + dz * dz < 200L * 200L) {
@@ -237,7 +294,8 @@ public final class WorldSiteManager {
     }
 
     /** Evaluate a biome without forcing the chunk to generate. */
-    private static boolean landBiomeAt(ServerLevel level, int x, int z) {
+    private static boolean siteBiomeAllowed(ServerLevel level, int x, int z,
+                                             MilestoneContentConfig.CoreSettings settings) {
         var source = level.getChunkSource();
         var biome = source.getGenerator().getBiomeSource().getNoiseBiome(
                 QuartPos.fromBlock(x),
@@ -245,6 +303,12 @@ public final class WorldSiteManager {
                 QuartPos.fromBlock(z),
                 source.randomState().sampler()
         );
+        String id = biome.unwrapKey().map(key -> key.location().toString()).orElse("");
+        if (settings != null) {
+            if (settings.blockedBiomes().contains(id)) return false;
+            if (!settings.allowedBiomes().isEmpty())
+                return settings.allowedBiomes().contains(id);
+        }
         return !biome.is(BiomeTags.IS_OCEAN) && !biome.is(BiomeTags.IS_RIVER);
     }
 
@@ -266,13 +330,13 @@ public final class WorldSiteManager {
             int x = plan.x() + offset[0], z = plan.z() + offset[1];
             // OCEAN_FLOOR ignores the water column; "surface" is the top of
             // the lakebed/seabed, not the surface of the water itself.
+            var settings = MilestoneContentConfig.server().core(plan.tier());
+            if (!siteBiomeAllowed(level, x, z, settings)) continue;
             int surface = level.getHeight(Heightmap.Types.OCEAN_FLOOR, x, z);
             BlockPos top = new BlockPos(x, surface - 1, z);
             if (!isNaturalSolid(level.getBlockState(top))) continue;
 
-            var settings = MilestoneContentConfig.server().core(plan.tier());
-            double fraction = settings != null ? settings.depthFraction()
-                    : 0.055D + 0.90D * plan.tier() / (CORE_COUNT - 1.0D);
+            double fraction = settings != null ? settings.depthFraction() : 0.5D;
             int targetY = (int) Math.round(surface - Math.max(0, surface - bottom) * fraction);
             targetY = Math.max(bottom, Math.min(surface - 4, targetY));
             for (int vertical : verticalOffsets) {
@@ -290,7 +354,7 @@ public final class WorldSiteManager {
                     // rather than waiting for another periodic site check.
                     tryStartAutomaticTendril(level, data,
                             new WorldSiteSavedData.CorePlan(
-                                    plan.tier(), plan.x(), plan.z(), plan.type(), true, center));
+                                    plan.tier(), plan.x(), plan.z(), plan.type(), true, center, plan.dimension()));
                 }
                 return;
             }
@@ -423,6 +487,10 @@ public final class WorldSiteManager {
                 || state.is(Blocks.COAL_ORE) || state.is(Blocks.COPPER_ORE)
                 || state.is(Blocks.IRON_ORE) || state.is(Blocks.GOLD_ORE)
                 || state.is(Blocks.REDSTONE_ORE) || state.is(Blocks.LAPIS_ORE)
-                || state.is(Blocks.DIAMOND_ORE);
+                || state.is(Blocks.DIAMOND_ORE)
+                || state.is(Blocks.NETHERRACK) || state.is(Blocks.BASALT)
+                || state.is(Blocks.BLACKSTONE) || state.is(Blocks.SOUL_SAND)
+                || state.is(Blocks.SOUL_SOIL) || state.is(Blocks.CRIMSON_NYLIUM)
+                || state.is(Blocks.WARPED_NYLIUM) || state.is(Blocks.END_STONE);
     }
 }
