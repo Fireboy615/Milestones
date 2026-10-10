@@ -1,6 +1,10 @@
 package net.fireboy.milestone;
 
 import net.fireboy.milestone.command.MilestoneCommands;
+import net.fireboy.milestone.server.config.MilestoneContentConfig;
+import net.fireboy.milestone.command.MilestoneJournalCommands;
+import net.fireboy.milestone.milestone.MilestoneJournal;
+import net.fireboy.milestone.network.CreateSchematicNetwork;
 import net.fireboy.milestone.gateway.NetherPortalEvents;
 import net.fireboy.milestone.registry.ModBlockEntities;
 import net.fireboy.milestone.registry.ModBlocks;
@@ -12,6 +16,8 @@ import net.fireboy.milestone.resonance.RegenerationManager;
 import net.fireboy.milestone.resonance.RetractionManager;
 import net.fireboy.milestone.task.MilestoneTaskEvents;
 import net.fireboy.milestone.resonance.GlowLichenManager;
+import net.fireboy.milestone.worldgen.WorldSiteManager;
+import net.fireboy.milestone.worldgen.WorldSiteCommands;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -30,7 +36,13 @@ public final class Milestone {
         ModMenus.MENUS.register(modBus);
 
         modBus.addListener(this::addCreativeTabContents);
+        modBus.addListener(CreateSchematicNetwork::register);
+        NeoForge.EVENT_BUS.addListener(MilestoneContentConfig::onServerStarting);
         NeoForge.EVENT_BUS.addListener(MilestoneCommands::register);
+        NeoForge.EVENT_BUS.addListener(MilestoneJournalCommands::register);
+        NeoForge.EVENT_BUS.addListener(MilestoneJournal::onPlayerLogin);
+        NeoForge.EVENT_BUS.addListener(WorldSiteCommands::register);
+        NeoForge.EVENT_BUS.addListener(WorldSiteManager::onServerTick);
         NeoForge.EVENT_BUS.addListener(ResonanceEvents::onBlockBreak);
         NeoForge.EVENT_BUS.addListener(GrowthManager::onServerTick);
         NeoForge.EVENT_BUS.addListener(RetractionManager::onServerTick);
@@ -46,6 +58,10 @@ public final class Milestone {
     private void addCreativeTabContents(BuildCreativeModeTabContentsEvent event) {
         if (event.getTabKey() == CreativeModeTabs.FUNCTIONAL_BLOCKS) {
             event.accept(ModItems.MILESTONE_CORE.get());
+            event.accept(ModItems.RESONANT_EXCHANGE.get());
+            event.accept(ModItems.MISSION_STATION.get());
+            event.accept(ModItems.MILESTONE_JOURNAL.get());
+            // The legacy placeholder remains registered only to migrate old-world items.
         }
     }
 }

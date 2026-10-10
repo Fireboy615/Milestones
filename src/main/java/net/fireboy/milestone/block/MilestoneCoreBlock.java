@@ -33,8 +33,8 @@ public class MilestoneCoreBlock extends BaseEntityBlock {
     // 1 pixel inset from every horizontal side, and 9 pixels tall.
     // Minecraft block-shape coordinates run from 0..16.
     private static final VoxelShape SHAPE = box(
-            1.0D, 0.0D, 1.0D,
-            15.0D, 9.0D, 15.0D
+            0.0D, 0.0D, 0.0D,
+            16.0D, 16.0D, 16.0D
     );
 
     public MilestoneCoreBlock(Properties properties) {
@@ -53,7 +53,7 @@ public class MilestoneCoreBlock extends BaseEntityBlock {
 
     @Override
     protected RenderShape getRenderShape(BlockState state) {
-        return RenderShape.ENTITYBLOCK_ANIMATED;
+        return RenderShape.MODEL;
     }
 
     @Override
@@ -80,7 +80,7 @@ public class MilestoneCoreBlock extends BaseEntityBlock {
         if (!level.isClientSide
                 && level instanceof ServerLevel serverLevel
                 && player instanceof ServerPlayer serverPlayer) {
-            MilestoneGameplayManager.openMenu(serverLevel, pos, serverPlayer);
+            MilestoneGameplayManager.discoverCore(serverLevel, pos, serverPlayer);
         }
         return ItemInteractionResult.sidedSuccess(level.isClientSide);
     }
@@ -96,7 +96,7 @@ public class MilestoneCoreBlock extends BaseEntityBlock {
         if (!level.isClientSide
                 && level instanceof ServerLevel serverLevel
                 && player instanceof ServerPlayer serverPlayer) {
-            MilestoneGameplayManager.openMenu(serverLevel, pos, serverPlayer);
+            MilestoneGameplayManager.discoverCore(serverLevel, pos, serverPlayer);
         }
         return InteractionResult.sidedSuccess(level.isClientSide);
     }

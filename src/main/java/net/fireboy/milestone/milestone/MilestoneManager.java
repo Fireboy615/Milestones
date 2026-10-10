@@ -58,7 +58,8 @@ public final class MilestoneManager {
     public static MilestoneRecord save(ServerLevel level, MilestoneRecord record) {
         data(level.getServer()).put(record);
 
-        if (level.getBlockEntity(record.corePos()) instanceof MilestoneCoreBlockEntity core) {
+        if (level.hasChunkAt(record.corePos())
+                && level.getBlockEntity(record.corePos()) instanceof MilestoneCoreBlockEntity core) {
             core.setMilestoneState(record.state());
         }
         return record;

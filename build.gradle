@@ -116,6 +116,12 @@ configurations {
 }
 
 dependencies {
+    // Exact Create jar from the Internshit Server instance; not bundled in Milestone.
+    compileOnly files('libs/create-1.21.1-6.0.10.jar')
+    // Create bundles its Flywheel/Ponder runtime dependencies in this release.
+    // Keep runClient usable for testing the actual Create schematic integration.
+    localRuntime files('libs/create-1.21.1-6.0.10.jar')
+
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
     // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"
@@ -187,4 +193,38 @@ idea {
         downloadSources = true
         downloadJavadoc = true
     }
+}
+
+
+// A successful 'gradlew build' installs the current Milestone jar into the
+// user's Internshit Server CurseForge instance. Only Milestone jars are touched.
+def internshitModsDir = file(providers.gradleProperty('milestone_install_instance').get() + '/mods')
+def installedJarName = "${mod_id}-${mod_version}.jar"
+tasks.register('installInternshitServer', Copy) {
+    group = 'distribution'
+    description = 'Copy the built Milestone jar into the Internshit Server instance.'
+    dependsOn tasks.named('jar')
+    from tasks.named('jar').flatMap { it.archiveFile }
+    into internshitModsDir
+    outputs.upToDateWhen { false }
+    doFirst {
+        if (!internshitModsDir.isDirectory()) {
+            throw new GradleException("CurseForge mods directory not found: ${internshitModsDir}")
+        }
+    }
+    doLast {
+        def current = installedJarName
+        internshitModsDir.listFiles()?.each { existing ->
+            if (existing.isFile() && existing.name ==~ /milestone-.*\.jar/
+                    && existing.name != current) {
+                if (!existing.delete()) {
+                    logger.warn("Could not remove obsolete Milestone jar: ${existing}")
+                }
+            }
+        }
+        logger.lifecycle("Installed Milestone ${current} to Internshit Server: ${internshitModsDir}")
+    }
+}
+tasks.named('build') {
+    finalizedBy tasks.named('installInternshitServer')
 }

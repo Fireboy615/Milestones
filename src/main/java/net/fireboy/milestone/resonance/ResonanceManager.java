@@ -1,6 +1,10 @@
 package net.fireboy.milestone.resonance;
 
 import net.fireboy.milestone.block.YoungResonantBlock;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import net.fireboy.milestone.registry.ModBlocks;
 import net.fireboy.milestone.world.ResonanceSavedData;
 import net.minecraft.core.BlockPos;
@@ -20,6 +24,7 @@ import java.util.Random;
 import java.util.UUID;
 
 public final class ResonanceManager {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ResonanceManager.class);
     private static final SavedData.Factory<ResonanceSavedData> FACTORY =
             new SavedData.Factory<>(ResonanceSavedData::create, ResonanceSavedData::load);
 
@@ -67,21 +72,30 @@ public final class ResonanceManager {
                 ? net.minecraft.world.level.block.Blocks.AIR.defaultBlockState()
                 : worldState;
 
+        // Same preservation strategy as Mage Additions TemporaryBlockManager:
+        // serialize the full BlockEntity, persist it before changing the block,
+        // then detach the entity to prevent inventories dropping in onRemove.
+        BlockEntity originalEntity = level.getBlockEntity(pos);
+        CompoundTag originalEntityTag = null;
+        if (originalEntity != null) {
+            try {
+                originalEntityTag = originalEntity.saveWithFullMetadata(level.registryAccess());
+            } catch (Exception failure) {
+                LOGGER.error("Cannot preserve block entity at {}: skipping Resonance", pos, failure);
+                return false;
+            }
+        }
         ResonanceRecord record = new ResonanceRecord(
-                dimension,
-                pos.immutable(),
-                milestoneId,
-                originalState
+                dimension, pos.immutable(), milestoneId, originalState, originalEntityTag
         );
-
         data.put(record);
-        boolean changed = level.setBlock(
-                pos,
-                ModBlocks.YOUNG_RESONANT_BLOCK.get().defaultBlockState(),
-                Block.UPDATE_ALL
-        );
+        if (originalEntity != null) level.removeBlockEntity(pos);
+        BlockState overlay = ModBlocks.YOUNG_RESONANT_BLOCK.get().defaultBlockState();
+        boolean changed = level.setBlock(pos, overlay, Block.UPDATE_ALL);
 
-        if (!changed) {
+        if (!changed && !level.getBlockState(pos).equals(overlay)) {
+            level.setBlock(pos, originalState, Block.UPDATE_ALL);
+            restoreBlockEntity(level, record);
             data.remove(dimension, pos);
             return false;
         }
@@ -503,7 +517,7 @@ public final class ResonanceManager {
         }
 
         GlowLichenManager.removeSupportedBy(level, pos, milestoneId);
-        if (level.setBlock(pos, record.originalState(), Block.UPDATE_ALL)) {
+        if (restoreOriginal(level, record)) {
             data.remove(dimension, pos);
             return RestoreOutcome.RESTORED;
         }
@@ -527,7 +541,7 @@ public final class ResonanceManager {
         }
 
         GlowLichenManager.removeSupportedBy(level, pos, record.milestoneId());
-        boolean changed = level.setBlock(pos, record.originalState(), Block.UPDATE_ALL);
+        boolean changed = restoreOriginal(level, record);
         if (changed) {
             data.remove(dimension, pos);
             // Stripping removes the visible coating, but a still-living Milestone
@@ -552,22 +566,14 @@ public final class ResonanceManager {
         int failed = 0;
 
         for (ResonanceRecord record : records) {
-            BlockPos pos = record.pos();
-            BlockState current = level.getBlockState(pos);
-
-            GlowLichenManager.removeSupportedBy(level, pos, milestoneId);
-
-            if (!isResonantState(current)) {
-                data.remove(dimension, pos);
-                stale++;
+            if (!level.hasChunkAt(record.pos())) {
+                failed++;
                 continue;
             }
-
-            if (level.setBlock(pos, record.originalState(), Block.UPDATE_ALL)) {
-                data.remove(dimension, pos);
-                restored++;
-            } else {
-                failed++;
+            switch (restoreOwned(level, record.pos(), milestoneId)) {
+                case RESTORED -> restored++;
+                case STALE -> stale++;
+                default -> failed++;
             }
         }
 
@@ -585,21 +591,50 @@ public final class ResonanceManager {
     }
 
     public static boolean canCover(ServerLevel level, BlockPos pos, BlockState state) {
-        if (state.is(ModBlocks.MILESTONE_CORE.get()) || isResonantState(state)) {
-            return false;
-        }
-        if (state.hasBlockEntity() || level.getBlockEntity(pos) != null) {
-            return false;
-        }
-        if (!state.getFluidState().isEmpty()) {
-            return false;
-        }
+        // Everything (inventories, fluids, modded BEs, fragile blocks) can be
+        // saved and replaced, except the three permanent Milestone anchors.
+        return level.hasChunkAt(pos)
+                && !level.isOutsideBuildHeight(pos)
+                && !state.is(ModBlocks.MILESTONE_CORE.get())
+                && !state.is(ModBlocks.RESONANT_EXCHANGE.get())
+                && !state.is(ModBlocks.MISSION_STATION.get())
+                && !isResonantState(state);
+    }
 
-        if (state.isAir()) {
+    /** Restore the original state and full block-entity NBT where applicable. */
+    private static boolean restoreOriginal(ServerLevel level, ResonanceRecord record) {
+        if (!level.hasChunkAt(record.pos())) return false;
+        boolean changed = level.setBlock(record.pos(), record.originalState(), Block.UPDATE_ALL);
+        if (!changed && !level.getBlockState(record.pos()).equals(record.originalState())) {
+            return false;
+        }
+        return restoreBlockEntity(level, record);
+    }
+
+    private static boolean restoreBlockEntity(ServerLevel level, ResonanceRecord record) {
+        CompoundTag tag = record.originalBlockEntity();
+        if (tag == null) return true;
+        try {
+            BlockEntity existing = level.getBlockEntity(record.pos());
+            if (existing != null) {
+                existing.loadWithComponents(tag.copy(), level.registryAccess());
+                existing.setChanged();
+                return true;
+            }
+            BlockEntity restored = BlockEntity.loadStatic(
+                    record.pos(), record.originalState(), tag.copy(), level.registryAccess());
+            if (restored == null) {
+                LOGGER.error("No block entity loaded for restored block at {}", record.pos());
+                return false;
+            }
+            restored.setLevel(level);
+            level.setBlockEntity(restored);
+            restored.setChanged();
             return true;
+        } catch (Exception failure) {
+            LOGGER.error("Failed to restore original block entity at {}", record.pos(), failure);
+            return false;
         }
-
-        return state.getDestroySpeed(level, pos) >= 0.0F;
     }
 
 

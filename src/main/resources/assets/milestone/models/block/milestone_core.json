@@ -1,6 +1,1 @@
-{
-  "parent": "minecraft:block/cube_all",
-  "textures": {
-    "all": "milestone:block/milestone_core"
-  }
-}
+{"parent":"minecraft:block/cube_all","textures":{"all":"minecraft:block/chiseled_bookshelf_side"}}

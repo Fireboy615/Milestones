@@ -8,6 +8,7 @@ import net.fireboy.milestone.task.ItemSubmissionTaskDefinition;
 import net.fireboy.milestone.task.KillTaskDefinition;
 import net.fireboy.milestone.task.MilestoneTaskDefinition;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -18,7 +19,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Vanilla-style Milestone Core container screen.
+ * Vanilla-style Mission Station container screen.
  *
  * The screen deliberately uses the normal 176px container width and a compact
  * 238px height. Minecraft container screens operate in GUI-scaled coordinates,
@@ -38,6 +39,40 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
     private static final int PROGRESS_BG = 0xFF555555;
     private static final int PROGRESS_FILL = 0xFF80B918;
 
+    private Button previousButton;
+    private Button nextButton;
+    private Button claimButton;
+    private Button verifyButton;
+
+    @Override
+    protected void init() {
+        super.init();
+        previousButton = addRenderableWidget(Button.builder(Component.literal("<"),
+                button -> switchMilestone(MilestoneMenu.BUTTON_PREVIOUS))
+                .bounds(leftPos + 136, topPos + 4, 16, 13).build());
+        nextButton = addRenderableWidget(Button.builder(Component.literal(">"),
+                button -> switchMilestone(MilestoneMenu.BUTTON_NEXT))
+                .bounds(leftPos + 155, topPos + 4, 16, 13).build());
+        claimButton = addRenderableWidget(Button.builder(Component.literal("Get Schematic"),
+                button -> stationAction(MilestoneMenu.BUTTON_CLAIM_SCHEMATIC))
+                .bounds(leftPos + 8, topPos + 119, 82, 18).build());
+        verifyButton = addRenderableWidget(Button.builder(Component.literal("Verify Build"),
+                button -> stationAction(MilestoneMenu.BUTTON_VERIFY_STRUCTURE))
+                .bounds(leftPos + 93, topPos + 119, 75, 18).build());
+    }
+
+    private void stationAction(int action) {
+        if (menu.availableCount() > 0 && minecraft != null && minecraft.gameMode != null) {
+            minecraft.gameMode.handleInventoryButtonClick(menu.containerId, action);
+        }
+    }
+
+    private void switchMilestone(int direction) {
+        if (menu.availableCount() > 1 && minecraft != null && minecraft.gameMode != null) {
+            minecraft.gameMode.handleInventoryButtonClick(menu.containerId, direction);
+        }
+    }
+
     public MilestoneScreen(MilestoneMenu menu, Inventory playerInventory, Component title) {
         super(menu, playerInventory, title);
         this.imageWidth = 176;
@@ -50,6 +85,11 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        if (previousButton != null) previousButton.active = menu.availableCount() > 1;
+        if (nextButton != null) nextButton.active = menu.availableCount() > 1;
+        if (claimButton != null) claimButton.active = menu.availableCount() > 0;
+        if (verifyButton != null) verifyButton.active =
+                menu.availableCount() > 0 && !menu.structureVerified();
         super.render(graphics, mouseX, mouseY, partialTick);
         renderTooltip(graphics, mouseX, mouseY);
     }
@@ -59,7 +99,7 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
         graphics.blit(BACKGROUND, leftPos, topPos, 0, 0, imageWidth, imageHeight);
 
         MilestoneTaskDefinition task = menu.taskDefinition();
-        if (task instanceof ItemSubmissionTaskDefinition && !menu.taskComplete()) {
+        if (menu.structureVerified() && task instanceof ItemSubmissionTaskDefinition && !menu.taskComplete()) {
             graphics.blitSprite(
                     SLOT_SPRITE,
                     leftPos + MilestoneMenu.SUBMISSION_SLOT_X - 1,
@@ -86,9 +126,32 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
     protected void renderLabels(GuiGraphics graphics, int mouseX, int mouseY) {
         MilestoneTaskDefinition task = menu.taskDefinition();
 
-        // Standard vanilla container title placement and colour.
-        graphics.drawString(font, menu.milestoneType().displayName(), titleLabelX, titleLabelY, VANILLA_TEXT, false);
+        // Station-owned UI: a selectable view of all discovered Cores.
+        if (menu.availableCount() == 0) {
+            graphics.drawString(font, "Mission Station", titleLabelX, titleLabelY, VANILLA_TEXT, false);
+            graphics.drawString(font, "No discovered Milestones yet.", 8, 35, INCOMPLETE_TEXT, false);
+            graphics.drawString(font, "Find a Core and right-click it", 8, 48, MUTED_TEXT, false);
+            graphics.drawString(font, "to unlock its schematic here.", 8, 59, MUTED_TEXT, false);
+            graphics.drawString(font, playerInventoryTitle, inventoryLabelX, inventoryLabelY, VANILLA_TEXT, false);
+            return;
+        }
+
+        String name = font.plainSubstrByWidth(menu.milestoneType().displayName(), 103);
+        graphics.drawString(font, name, titleLabelX, titleLabelY, VANILLA_TEXT, false);
+        graphics.drawString(font, (menu.selectedIndex() + 1) + "/" + menu.availableCount(),
+                112, titleLabelY, MUTED_TEXT, false);
         graphics.drawString(font, "State: " + pretty(menu.milestoneState().name()), 8, 18, MUTED_TEXT, false);
+
+        if (!menu.structureVerified()) {
+            graphics.drawString(font, "Construction required", 8, 37, INCOMPLETE_TEXT, false);
+            graphics.drawString(font, "1. Claim the Create schematic below.", 8, 52, VANILLA_TEXT, false);
+            graphics.drawString(font, "2. Build it within 24 blocks", 8, 65, VANILLA_TEXT, false);
+            graphics.drawString(font, "   of the Mission Station.", 8, 75, VANILLA_TEXT, false);
+            graphics.drawString(font, "3. Press Verify Build.", 8, 88, VANILLA_TEXT, false);
+            graphics.drawString(font, "Tasks unlock permanently.", 8, 102, MUTED_TEXT, false);
+            graphics.drawString(font, playerInventoryTitle, inventoryLabelX, inventoryLabelY, VANILLA_TEXT, false);
+            return;
+        }
 
         graphics.drawString(font, taskHeading(task), 8, 34, VANILLA_TEXT, false);
 
@@ -100,7 +163,7 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
             graphics.drawString(font, lines.get(i), 8, clueY + i * 9, VANILLA_TEXT, false);
         }
 
-        if (task instanceof ItemSubmissionTaskDefinition && !menu.taskComplete()) {
+        if (menu.structureVerified() && task instanceof ItemSubmissionTaskDefinition && !menu.taskComplete()) {
             graphics.drawString(font, "Offer", 143, 34, MUTED_TEXT, false);
         }
 
@@ -125,9 +188,8 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
                 ? "All participation rewards unlocked"
                 : "Next: " + next.contributors() + " - " + next.description();
         List<FormattedCharSequence> rewardLines = font.split(Component.literal(nextText), 160);
-        for (int i = 0; i < Math.min(rewardLines.size(), 2); i++) {
-            graphics.drawString(font, rewardLines.get(i), 8, 121 + i * 9, MUTED_TEXT, false);
-        }
+        // The construction/claim actions occupy this row; rewards remain in
+        // the Journal until the expanded Station UI arrives.
 
         graphics.drawString(font, playerInventoryTitle, inventoryLabelX, inventoryLabelY, VANILLA_TEXT, false);
     }

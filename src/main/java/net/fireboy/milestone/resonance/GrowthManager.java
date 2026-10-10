@@ -36,6 +36,10 @@ public final class GrowthManager {
     private static final int STAGE_TWO_AGE = 22;
     private static final int STAGE_THREE_AGE = 45;
 
+    /** Maximum maturity volumes placed per plan per 4-tick update.
+     * Unloaded sections catch up incrementally after their chunks return. */
+    private static final int MATERIALIZATION_BUDGET = 18;
+
     private static final SavedData.Factory<GrowthSavedData> FACTORY =
             new SavedData.Factory<>(GrowthSavedData::create, GrowthSavedData::load);
 
@@ -77,6 +81,82 @@ public final class GrowthManager {
         );
         data.put(plan);
         return new StartResult(true, positions.size(), branches.size(), null);
+    }
+
+    /** Used by automatic sites: when first generated, their living growth is
+     * already as old as the world, not just a few ticks old. */
+    public static StartResult startFromWorldBeginning(
+            ServerLevel level, BlockPos start, BlockPos end, UUID milestoneId) {
+        StartResult result = start(level, start, end, milestoneId);
+        if (result.started()) {
+            fastForward(level.getServer(), milestoneId, level.getGameTime());
+            materializeVisibleTip(level, milestoneId);
+        }
+        return result;
+    }
+
+    /**
+     * Progresses the stored logical front by world age without placing blocks or
+     * loading terrain. Also upgrades v0.27 existing automatic plans only once.
+     * Applied stages are left intact so missing world volumes still materialize.
+     */
+    public static boolean fastForward(MinecraftServer server, UUID milestoneId, long elapsedTicks) {
+        GrowthSavedData saved = data(server);
+        GrowthPlan plan = saved.get(milestoneId).orElse(null);
+        if (plan == null) return false;
+        long steps = Math.max(0L, elapsedTicks / GROWTH_TICK_INTERVAL);
+        int cursor = (int) Math.max(plan.cursor(), Math.min((long) plan.totalPositions(), steps));
+        ArrayList<Integer> ages = new ArrayList<>(plan.ages());
+        for (int i = 0; i < cursor; i++) {
+            int age = (int) Math.min(STAGE_THREE_AGE, Math.max(0L, steps - (i + 1L)));
+            ages.set(i, Math.max(ages.get(i), age));
+        }
+        ArrayList<GrowthBranch> branches = new ArrayList<>();
+        for (GrowthBranch branch : plan.branches()) {
+            long firstStep = branch.rootIndex() + 1L + STAGE_TWO_AGE;
+            long eligible = Math.max(0L, steps - firstStep + 1L);
+            int branchCursor = (int) Math.max(branch.cursor(),
+                    Math.min((long) branch.totalPositions(), eligible));
+            ArrayList<Integer> branchAges = new ArrayList<>(branch.ages());
+            for (int i = 0; i < branchCursor; i++) {
+                int age = (int) Math.min(STAGE_THREE_AGE,
+                        Math.max(0L, steps - (firstStep + i)));
+                branchAges.set(i, Math.max(branchAges.get(i), age));
+            }
+            branches.add(branch.withProgress(branchCursor, branchAges, branch.appliedStages()));
+        }
+        saved.put(plan.withProgress(cursor, ages, plan.appliedStages(), branches));
+        return true;
+    }
+
+    /**
+     * Show a small ready-grown surface clue immediately once a Core's chunk
+     * first exists. Only already-loaded blocks are modified. The remaining
+     * saved plan catches up progressively on normal growth ticks.
+     */
+    public static void materializeVisibleTip(ServerLevel level, UUID milestoneId) {
+        GrowthSavedData saved = data(level.getServer());
+        GrowthPlan plan = saved.get(milestoneId).orElse(null);
+        if (plan == null || plan.cursor() < 1 || plan.paused()) return;
+        ArrayList<Integer> stages = new ArrayList<>(plan.appliedStages());
+        int applied = 0;
+        int firstTipIndex = Math.max(0, plan.totalPositions() - 8);
+        for (int i = plan.cursor() - 1; i >= firstTipIndex && applied < 5; i--) {
+            int desired = maturityStageForAge(plan.ages().get(i));
+            if (desired < 0 || desired <= stages.get(i)) continue;
+            BlockPos center = plan.positions().get(i);
+            double radius = radiusForStage(plan, i, desired);
+            if (!volumeLoaded(level, center, radius)) continue;
+            ResonanceManager.GrowthVolumeResult result = ResonanceManager.coverGrowthVolume(
+                    level, center, radius, milestoneId);
+            if (result.unloaded() == 0) {
+                stages.set(i, desired);
+                applied++;
+            }
+        }
+        if (applied > 0) {
+            saved.put(plan.withProgress(plan.cursor(), plan.ages(), stages, plan.branches()));
+        }
     }
 
     public static Optional<GrowthPlan> get(MinecraftServer server, UUID milestoneId) {
@@ -136,24 +216,21 @@ public final class GrowthManager {
             ArrayList<GrowthBranch> branches = new ArrayList<>(plan.branches());
             int cursor = plan.cursor();
             boolean changed = false;
+            int remainingVolumes = MATERIALIZATION_BUDGET;
 
             // Existing trunk growth gets older every update. This continues after the
             // main propagation front arrives so its final section can still thicken.
             for (int i = 0; i < cursor; i++) {
-                if (ages.get(i) >= 0) {
+                if (ages.get(i) >= 0 && ages.get(i) < STAGE_THREE_AGE) {
                     ages.set(i, ages.get(i) + 1);
                     changed = true;
                 }
             }
 
-            // Advance only the narrow centreline at the live tip.
+            // The logical front advances even when every chunk on the path is
+            // unloaded. The plan and ages are saved; blocks are placed separately.
             int added = 0;
             while (cursor < plan.totalPositions() && added < POSITIONS_PER_STEP) {
-                BlockPos center = plan.positions().get(cursor);
-                if (!level.hasChunkAt(center)) {
-                    break;
-                }
-
                 ages.set(cursor, 0);
                 cursor++;
                 added++;
@@ -161,7 +238,9 @@ public final class GrowthManager {
             }
 
             // Bring active trunk nodes up to their earned maturity stage.
-            for (int i = 0; i < cursor; i++) {
+            // Materialize the outward tip first when catching up old world-age
+            // growth, so a surface signal appears promptly on the first visit.
+            for (int i = cursor - 1; i >= 0; i--) {
                 int desiredStage = maturityStageForAge(ages.get(i));
                 int appliedStage = appliedStages.get(i);
 
@@ -169,13 +248,15 @@ public final class GrowthManager {
                     continue;
                 }
 
+                if (remainingVolumes <= 0) break;
                 double radius = radiusForStage(plan, i, desiredStage);
+                BlockPos center = plan.positions().get(i);
+                // Never load chunks or even partially materialize across a
+                // loaded/unloaded boundary. Retry when this volume is available.
+                if (!volumeLoaded(level, center, radius)) continue;
+                remainingVolumes--;
                 ResonanceManager.GrowthVolumeResult result = ResonanceManager.coverGrowthVolume(
-                        level,
-                        plan.positions().get(i),
-                        radius,
-                        plan.milestoneId()
-                );
+                        level, center, radius, plan.milestoneId());
 
                 if (result.unloaded() == 0) {
                     appliedStages.set(i, desiredStage);
@@ -193,7 +274,9 @@ public final class GrowthManager {
                 if (rootIndex < 0 || rootIndex >= appliedStages.size()) {
                     continue;
                 }
-                if (appliedStages.get(rootIndex) < BRANCH_TRIGGER_STAGE) {
+                // Branch activation follows LOGICAL maturity, not materialized
+                // growth. Otherwise an unloaded trunk would freeze its branches.
+                if (maturityStageForAge(ages.get(rootIndex)) < BRANCH_TRIGGER_STAGE) {
                     continue;
                 }
 
@@ -203,7 +286,7 @@ public final class GrowthManager {
                 boolean branchChanged = false;
 
                 for (int i = 0; i < branchCursor; i++) {
-                    if (branchAges.get(i) >= 0) {
+                    if (branchAges.get(i) >= 0 && branchAges.get(i) < STAGE_THREE_AGE) {
                         branchAges.set(i, branchAges.get(i) + 1);
                         branchChanged = true;
                     }
@@ -212,11 +295,6 @@ public final class GrowthManager {
                 int branchAdded = 0;
                 while (branchCursor < branch.totalPositions()
                         && branchAdded < BRANCH_POSITIONS_PER_STEP) {
-                    BlockPos center = branch.positions().get(branchCursor);
-                    if (!level.hasChunkAt(center)) {
-                        break;
-                    }
-
                     branchAges.set(branchCursor, 0);
                     branchCursor++;
                     branchAdded++;
@@ -233,13 +311,13 @@ public final class GrowthManager {
                         continue;
                     }
 
+                    if (remainingVolumes <= 0) break;
                     double radius = branchRadiusForStage(plan, branch, branchIndex, i, desiredStage);
+                    BlockPos center = branch.positions().get(i);
+                    if (!volumeLoaded(level, center, radius)) continue;
+                    remainingVolumes--;
                     ResonanceManager.GrowthVolumeResult result = ResonanceManager.coverGrowthVolume(
-                            level,
-                            branch.positions().get(i),
-                            radius,
-                            plan.milestoneId()
-                    );
+                            level, center, radius, plan.milestoneId());
 
                     if (result.unloaded() == 0) {
                         branchStages.set(i, desiredStage);
@@ -266,6 +344,17 @@ public final class GrowthManager {
                 data.put(updated);
             }
         }
+    }
+
+    /** Full block volume must be in already-loaded chunks before applying it. */
+    private static boolean volumeLoaded(ServerLevel level, BlockPos center, double radius) {
+        int bounds = (int) Math.ceil(radius + 0.75D);
+        for (int dx : new int[]{-bounds, bounds}) {
+            for (int dz : new int[]{-bounds, bounds}) {
+                if (!level.hasChunkAt(center.offset(dx, 0, dz))) return false;
+            }
+        }
+        return true;
     }
 
     public static int maturityStageForAge(int age) {

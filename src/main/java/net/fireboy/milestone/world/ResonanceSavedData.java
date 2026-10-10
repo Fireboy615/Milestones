@@ -50,7 +50,9 @@ public class ResonanceSavedData extends SavedData {
                     dimension,
                     pos,
                     recordTag.getUUID("MilestoneId"),
-                    originalState
+                    originalState,
+                    recordTag.contains("OriginalBlockEntity")
+                            ? recordTag.getCompound("OriginalBlockEntity") : null
             );
             data.records.put(Key.of(dimension, pos), record);
         }
@@ -68,6 +70,9 @@ public class ResonanceSavedData extends SavedData {
             recordTag.putLong("Pos", record.pos().asLong());
             recordTag.putUUID("MilestoneId", record.milestoneId());
             recordTag.put("OriginalState", NbtUtils.writeBlockState(record.originalState()));
+            if (record.originalBlockEntity() != null) {
+                recordTag.put("OriginalBlockEntity", record.originalBlockEntity().copy());
+            }
             list.add(recordTag);
         }
 

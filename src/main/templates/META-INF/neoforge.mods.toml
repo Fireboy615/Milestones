@@ -25,3 +25,11 @@ type="required"
 versionRange="${minecraft_version_range}"
 ordering="NONE"
 side="BOTH"
+
+# Discovery rewards use Create's real filled schematic item and data components.
+[[dependencies.${mod_id}]]
+modId="create"
+type="required"
+versionRange="[6.0.10,6.1)"
+ordering="AFTER"
+side="BOTH"

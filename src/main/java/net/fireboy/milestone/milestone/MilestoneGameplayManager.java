@@ -2,6 +2,7 @@ package net.fireboy.milestone.milestone;
 
 import net.fireboy.milestone.blockentity.MilestoneCoreBlockEntity;
 import net.fireboy.milestone.menu.MilestoneMenu;
+import net.fireboy.milestone.server.config.MilestoneContentConfig;
 import net.fireboy.milestone.resonance.RegenerationManager;
 import net.fireboy.milestone.resonance.RetractionManager;
 import net.fireboy.milestone.task.AdvancementTaskDefinition;
@@ -33,91 +34,115 @@ public final class MilestoneGameplayManager {
     private MilestoneGameplayManager() {
     }
 
-    public static void openMenu(ServerLevel level, BlockPos corePos, ServerPlayer player) {
+    /** The Core only discovers the location. All tasks now live at the Mission Station. */
+    public static void discoverCore(ServerLevel level, BlockPos corePos, ServerPlayer player) {
         MilestoneRecord record = recordAt(level, corePos);
         if (record == null) {
             player.sendSystemMessage(Component.literal("This Core is not registered."));
             return;
         }
-
-        record = discoverIfNeeded(level, record, player);
-        record = ensureAssignment(level, record, player);
-        String displayName = record.type().displayName();
-
-        player.openMenu(
-                new SimpleMenuProvider(
-                        (containerId, inventory, menuPlayer) ->
-                                new MilestoneMenu(containerId, inventory, level, corePos),
-                        Component.literal(displayName)
-                ),
-                buffer -> buffer.writeBlockPos(corePos)
-        );
+        boolean wasUndiscovered = isPreDiscovery(record.state());
+        discoverIfNeeded(level, record, player);
+        player.sendSystemMessage(Component.literal(wasUndiscovered
+                ? "Milestone discovered! Claim its schematic at the Mission Station, build it nearby, and verify it to unlock tasks."
+                : "This Milestone is registered. Use its Mission Station menu to claim or verify its schematic.")
+                .withStyle(ChatFormatting.AQUA));
     }
 
-    /** Kept as a compatibility alias for older call sites/debug code. */
+    /** Open the central board; it can read unloaded Cores from persistent SavedData. */
+    public static void openMissionStation(ServerLevel level, BlockPos stationPos, ServerPlayer player) {
+        java.util.List<MilestoneRecord> records = new ArrayList<>(MilestoneManager.data(level.getServer()).all());
+        records.removeIf(record -> record.discoveredBy() == null);
+        records.sort(java.util.Comparator.comparingLong(MilestoneRecord::createdGameTime)
+                .thenComparing(record -> record.id().toString()));
+        java.util.List<UUID> ids = records.stream().map(MilestoneRecord::id).toList();
+        if (!records.isEmpty()) {
+            MilestoneRecord first = records.get(0);
+            if (StationConstructionManager.isVerified(level.getServer(), first)) {
+                ServerLevel owningLevel = MilestoneManager.levelFor(level.getServer(), first);
+                if (owningLevel != null) ensureAssignment(owningLevel, first, player);
+            }
+        }
+        player.openMenu(new SimpleMenuProvider(
+                (containerId, inventory, menuPlayer) ->
+                        new MilestoneMenu(containerId, inventory, level, stationPos, ids),
+                Component.literal("Mission Station")),
+                buffer -> {
+                    buffer.writeBlockPos(stationPos);
+                    buffer.writeUtf(MilestoneContentConfig.server().payload(), 65535);
+                });
+    }
+
+    /** Legacy debug compatibility; ordinary gameplay uses the Station. */
     public static void useEmptyHand(ServerLevel level, BlockPos corePos, ServerPlayer player) {
-        openMenu(level, corePos, player);
+        discoverCore(level, corePos, player);
     }
 
-    /** Item-task submission. Non-item tasks are deliberately completed by world events instead. */
+    /** Legacy/debug entry point, not called by Core interactions anymore. */
     public static void useItem(ServerLevel level, BlockPos corePos, ServerPlayer player, ItemStack stack) {
         MilestoneRecord record = recordAt(level, corePos);
-        if (record == null) {
-            player.sendSystemMessage(Component.literal("This Core is not registered."));
+        if (record != null && record.discoveredBy() != null) {
+            submitItemForRecord(level, record, player, stack);
+        }
+    }
+
+    /** Item submission from the public station; the Core chunk needn't be loaded. */
+    public static void submitFromStation(ServerLevel stationLevel, UUID milestoneId,
+                                         ServerPlayer player, ItemStack stack) {
+        MilestoneRecord record = MilestoneManager.get(stationLevel.getServer(), milestoneId).orElse(null);
+        if (record == null || record.discoveredBy() == null) {
+            player.sendSystemMessage(Component.literal("That Milestone hasn't been discovered."));
             return;
         }
+        if (!StationConstructionManager.isVerified(stationLevel.getServer(), record)) {
+            player.sendSystemMessage(Component.literal(
+                    "Build and verify this Milestone's Create schematic near the Mission Station first.")
+                    .withStyle(ChatFormatting.YELLOW));
+            return;
+        }
+        ServerLevel owningLevel = MilestoneManager.levelFor(stationLevel.getServer(), record);
+        if (owningLevel == null) return;
+        submitItemForRecord(owningLevel, record, player, stack);
+    }
 
-        record = discoverIfNeeded(level, record, player);
+    private static void submitItemForRecord(ServerLevel level, MilestoneRecord record,
+                                            ServerPlayer player, ItemStack stack) {
+        if (!StationConstructionManager.isVerified(level.getServer(), record)) {
+            player.sendSystemMessage(Component.literal("Build and verify the schematic at the Mission Station before contributing.")
+                    .withStyle(ChatFormatting.YELLOW));
+            return;
+        }
         record = ensureAssignment(level, record, player);
-
         TaskAssignment assignment = record.assignment(player.getUUID()).orElse(null);
-        if (assignment == null) {
-            player.sendSystemMessage(Component.literal("The Core could not assign you a task."));
-            return;
-        }
-
+        if (assignment == null) return;
         if (assignment.completed()) {
-            player.sendSystemMessage(Component.literal("You have already contributed to this Milestone.")
+            player.sendSystemMessage(Component.literal("You've already contributed to this Milestone.")
                     .withStyle(ChatFormatting.GREEN));
-            showStatus(player, record);
             return;
         }
 
         MilestoneTaskDefinition genericDefinition = MilestoneTaskCatalog.get(record, assignment.taskId());
-        if (genericDefinition == null) {
-            player.sendSystemMessage(Component.literal("Your assigned task is missing from the task catalog."));
-            return;
-        }
-
         if (!(genericDefinition instanceof ItemSubmissionTaskDefinition definition)) {
-            player.sendSystemMessage(Component.literal("This objective does not accept an item submission.")
+            player.sendSystemMessage(Component.literal("This objective completes automatically, not by offering an item.")
                     .withStyle(ChatFormatting.YELLOW));
-            player.sendSystemMessage(Component.literal(completionInstruction(genericDefinition))
-                    .withStyle(ChatFormatting.AQUA));
             return;
         }
-
         if (!stack.is(definition.item()) || stack.getCount() < definition.count()) {
-            player.sendSystemMessage(Component.literal("The Core rejects this offering.")
+            player.sendSystemMessage(Component.literal("The Mission Station rejects this offering.")
                     .withStyle(ChatFormatting.RED));
-            player.sendSystemMessage(Component.literal("Your clue: " + definition.clue())
-                    .withStyle(ChatFormatting.AQUA));
             return;
         }
-
-        if (!player.getAbilities().instabuild) {
-            stack.shrink(definition.count());
-        }
-
-        completeContribution(
-                level,
-                record,
-                player,
-                Component.literal("The Core accepts your contribution.").withStyle(ChatFormatting.GREEN)
-        );
+        if (!player.getAbilities().instabuild) stack.shrink(definition.count());
+        completeContribution(level, record, player,
+                Component.literal("The Mission Station accepts your contribution.")
+                        .withStyle(ChatFormatting.GREEN));
     }
 
     public static MilestoneRecord ensureAssignment(ServerLevel level, MilestoneRecord record, ServerPlayer player) {
+        if (record.discoveredBy() == null
+                || !StationConstructionManager.isVerified(level.getServer(), record)) {
+            return record;
+        }
         if (record.assignment(player.getUUID()).isPresent()) {
             return record;
         }
@@ -151,6 +176,11 @@ public final class MilestoneGameplayManager {
         player.sendSystemMessage(Component.literal("State: " + record.state().name())
                 .withStyle(ChatFormatting.GRAY));
 
+        if (!StationConstructionManager.isVerified(player.getServer(), record)) {
+            player.sendSystemMessage(Component.literal("Construction required: claim, build and verify the schematic at the Mission Station.")
+                    .withStyle(ChatFormatting.YELLOW));
+            return;
+        }
         TaskAssignment assignment = record.assignment(player.getUUID()).orElse(null);
         if (assignment == null) {
             player.sendSystemMessage(Component.literal("Your task: not assigned yet")
@@ -250,7 +280,7 @@ public final class MilestoneGameplayManager {
                 player,
                 definition -> definition instanceof KillTaskDefinition killTask
                         && killTask.target() == killedType,
-                Component.literal("The Core acknowledges your hunt.").withStyle(ChatFormatting.GREEN)
+                Component.literal("The Mission Station acknowledges your hunt.").withStyle(ChatFormatting.GREEN)
         );
     }
 
@@ -260,7 +290,7 @@ public final class MilestoneGameplayManager {
                 player,
                 definition -> definition instanceof AdvancementTaskDefinition advancementTask
                         && advancementTask.advancementId().equals(advancementId),
-                Component.literal("The Core acknowledges your achievement.").withStyle(ChatFormatting.GREEN)
+                Component.literal("The Mission Station acknowledges your achievement.").withStyle(ChatFormatting.GREEN)
         );
     }
 
@@ -277,7 +307,8 @@ public final class MilestoneGameplayManager {
         // Snapshot because completing a task replaces records in SavedData.
         for (MilestoneRecord record : new ArrayList<>(MilestoneManager.data(server).all())) {
             TaskAssignment assignment = record.assignment(player.getUUID()).orElse(null);
-            if (assignment == null || assignment.completed()) {
+            if (assignment == null || assignment.completed()
+                    || !StationConstructionManager.isVerified(server, record)) {
                 continue;
             }
 
@@ -319,7 +350,7 @@ public final class MilestoneGameplayManager {
 
     public static String completionInstruction(MilestoneTaskDefinition definition) {
         if (definition instanceof ItemSubmissionTaskDefinition) {
-            return "Submission: bring the requested offering to this Core.";
+            return "Submission: bring the requested offering to the Mission Station.";
         }
         if (definition instanceof KillTaskDefinition) {
             return "Completion: automatic when you personally land the killing blow.";
@@ -352,6 +383,7 @@ public final class MilestoneGameplayManager {
         ).withStyle(ChatFormatting.AQUA));
         finder.sendSystemMessage(Component.literal("You are recorded as this Milestone's finder.")
                 .withStyle(ChatFormatting.GOLD));
+        // Schematics are claimed from the corresponding Mission Station menu.
         return record;
     }
 

@@ -38,3 +38,6 @@ run/
 **/src/generated/**/.cache/
 repo/
 !**/src/**/repo/
+
+# Local third-party development dependencies (never redistribute Create jars).
+libs/*.jar

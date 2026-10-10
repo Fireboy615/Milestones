@@ -1,7 +1,7 @@
 package net.fireboy.milestone.client;
 
 import net.fireboy.milestone.Milestone;
-import net.fireboy.milestone.client.render.MilestoneCoreBlockEntityRenderer;
+import net.fireboy.milestone.client.render.MissionStationRenderer;
 import net.fireboy.milestone.client.render.MilestoneCoreItemExtensions;
 import net.fireboy.milestone.client.screen.MilestoneScreen;
 import net.fireboy.milestone.registry.ModBlockEntities;
@@ -22,8 +22,8 @@ public final class MilestoneClientEvents {
     @SubscribeEvent
     public static void registerRenderers(EntityRenderersEvent.RegisterRenderers event) {
         event.registerBlockEntityRenderer(
-                ModBlockEntities.MILESTONE_CORE.get(),
-                MilestoneCoreBlockEntityRenderer::new
+                ModBlockEntities.MISSION_STATION.get(),
+                MissionStationRenderer::new
         );
     }
 
@@ -31,7 +31,7 @@ public final class MilestoneClientEvents {
     public static void registerClientExtensions(RegisterClientExtensionsEvent event) {
         event.registerItem(
                 new MilestoneCoreItemExtensions(),
-                ModItems.MILESTONE_CORE.get()
+                ModItems.MISSION_STATION.get()
         );
     }
     @SubscribeEvent
