@@ -94,6 +94,11 @@ public final class MilestoneGameplayManager {
             player.sendSystemMessage(Component.literal("That Milestone hasn't been discovered."));
             return;
         }
+        if (!MilestoneContentConfig.prerequisitesMet(stationLevel.getServer(), record)) {
+            player.sendSystemMessage(Component.literal("Complete the prerequisite Core before contributing.")
+                    .withStyle(ChatFormatting.YELLOW));
+            return;
+        }
         if (!StationConstructionManager.isVerified(stationLevel.getServer(), record)) {
             player.sendSystemMessage(Component.literal(
                     "Build and verify this Milestone's Create schematic near the Mission Station first.")
@@ -107,6 +112,7 @@ public final class MilestoneGameplayManager {
 
     private static void submitItemForRecord(ServerLevel level, MilestoneRecord record,
                                             ServerPlayer player, ItemStack stack) {
+        if (!MilestoneContentConfig.prerequisitesMet(level.getServer(), record)) return;
         if (!StationConstructionManager.isVerified(level.getServer(), record)) {
             player.sendSystemMessage(Component.literal("Build and verify the schematic at the Mission Station before contributing.")
                     .withStyle(ChatFormatting.YELLOW));
@@ -140,6 +146,7 @@ public final class MilestoneGameplayManager {
 
     public static MilestoneRecord ensureAssignment(ServerLevel level, MilestoneRecord record, ServerPlayer player) {
         if (record.discoveredBy() == null
+                || !MilestoneContentConfig.prerequisitesMet(level.getServer(), record)
                 || !StationConstructionManager.isVerified(level.getServer(), record)) {
             return record;
         }
@@ -176,6 +183,11 @@ public final class MilestoneGameplayManager {
         player.sendSystemMessage(Component.literal("State: " + record.state().name())
                 .withStyle(ChatFormatting.GRAY));
 
+        if (!MilestoneContentConfig.prerequisitesMet(player.getServer(), record)) {
+            player.sendSystemMessage(Component.literal("Complete the prerequisite Core first.")
+                    .withStyle(ChatFormatting.YELLOW));
+            return;
+        }
         if (!StationConstructionManager.isVerified(player.getServer(), record)) {
             player.sendSystemMessage(Component.literal("Construction required: claim, build and verify the schematic at the Mission Station.")
                     .withStyle(ChatFormatting.YELLOW));
@@ -188,6 +200,8 @@ public final class MilestoneGameplayManager {
         } else {
             MilestoneTaskDefinition definition = MilestoneTaskCatalog.get(record, assignment.taskId());
             String clue = definition == null ? "Unknown task" : definition.clue();
+            if (definition instanceof KillTaskDefinition hunt)
+                clue += " (" + assignment.progress() + "/" + hunt.count() + ")";
             player.sendSystemMessage(Component.literal("Your task: " + clue)
                     .withStyle(ChatFormatting.AQUA));
             if (definition != null) {
@@ -274,14 +288,31 @@ public final class MilestoneGameplayManager {
                 .orElseGet(() -> MilestoneManager.register(level, core));
     }
 
-    /** Complete any assigned hunt task whose target was personally killed by this player. */
+    /** Each killing blow adds one to the assigned player's hunt progress at every eligible Core. */
     public static void onPlayerKill(ServerPlayer player, EntityType<?> killedType) {
-        completeMatchingWorldTasks(
-                player,
-                definition -> definition instanceof KillTaskDefinition killTask
-                        && killTask.target() == killedType,
-                Component.literal("The Mission Station acknowledges your hunt.").withStyle(ChatFormatting.GREEN)
-        );
+        MinecraftServer server = player.getServer();
+        if (server == null) return;
+        for (MilestoneRecord record : new ArrayList<>(MilestoneManager.data(server).all())) {
+            TaskAssignment assignment = record.assignment(player.getUUID()).orElse(null);
+            if (assignment == null || assignment.completed()
+                    || !StationConstructionManager.isVerified(server, record)
+                    || !MilestoneContentConfig.prerequisitesMet(server, record)) continue;
+            MilestoneTaskDefinition task = MilestoneTaskCatalog.get(record, assignment.taskId());
+            if (!(task instanceof KillTaskDefinition hunt) || hunt.target() != killedType) continue;
+            ServerLevel owning = MilestoneManager.levelFor(server, record);
+            if (owning == null) continue;
+            int progress = Math.min(hunt.count(), assignment.progress() + 1);
+            if (progress >= hunt.count()) {
+                completeContribution(owning, record.updateAssignment(assignment.withProgress(progress)),
+                        player, Component.literal("Hunt complete: " + progress + "/" + hunt.count())
+                                .withStyle(ChatFormatting.GREEN));
+            } else {
+                MilestoneManager.save(owning, record.updateAssignment(assignment.withProgress(progress)));
+                player.sendSystemMessage(Component.literal(
+                        "Hunt progress: " + progress + "/" + hunt.count() + " (" + hunt.clue() + ")")
+                        .withStyle(ChatFormatting.AQUA));
+            }
+        }
     }
 
     /** Complete any assigned advancement task matching the advancement just earned. */
@@ -308,7 +339,8 @@ public final class MilestoneGameplayManager {
         for (MilestoneRecord record : new ArrayList<>(MilestoneManager.data(server).all())) {
             TaskAssignment assignment = record.assignment(player.getUUID()).orElse(null);
             if (assignment == null || assignment.completed()
-                    || !StationConstructionManager.isVerified(server, record)) {
+                    || !StationConstructionManager.isVerified(server, record)
+                    || !MilestoneContentConfig.prerequisitesMet(server, record)) {
                 continue;
             }
 
@@ -352,8 +384,8 @@ public final class MilestoneGameplayManager {
         if (definition instanceof ItemSubmissionTaskDefinition) {
             return "Submission: bring the requested offering to the Mission Station.";
         }
-        if (definition instanceof KillTaskDefinition) {
-            return "Completion: automatic when you personally land the killing blow.";
+        if (definition instanceof KillTaskDefinition hunt) {
+            return "Hunt: personally defeat " + hunt.count() + " target(s).";
         }
         if (definition instanceof AdvancementTaskDefinition) {
             return "Completion: automatic when you earn the requested advancement.";

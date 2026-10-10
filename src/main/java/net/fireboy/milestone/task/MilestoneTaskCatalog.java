@@ -2,6 +2,7 @@ package net.fireboy.milestone.task;
 
 import net.fireboy.milestone.milestone.MilestoneRecord;
 import net.fireboy.milestone.milestone.MilestoneType;
+import net.fireboy.milestone.server.config.MilestoneContentConfig;
 import net.minecraft.advancements.AdvancementHolder;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
@@ -200,7 +201,8 @@ public final class MilestoneTaskCatalog {
     }
 
     public static List<MilestoneTaskDefinition> tasksFor(MilestoneRecord record) {
-        return tasksFor(record.type());
+        return MilestoneContentConfig.pool(MilestoneContentConfig.server(),
+                record.coreTier(), record.type(), tasksFor(record.type()));
     }
 
     public static List<MilestoneTaskDefinition> tasksFor(MilestoneType type) {
@@ -208,6 +210,20 @@ public final class MilestoneTaskCatalog {
             case NETHER_GATE -> NETHER_GATE_TASKS;
             case GENERIC -> GENERIC_TASKS;
         };
+    }
+
+    public static int indexOf(MilestoneRecord record, String id) {
+        List<MilestoneTaskDefinition> tasks = tasksFor(record);
+        for (int i = 0; i < tasks.size(); i++) {
+            if (tasks.get(i).id().equals(id)) return i;
+        }
+        return -1;
+    }
+
+    public static MilestoneTaskDefinition byIndex(MilestoneType type, int tier, int index) {
+        List<MilestoneTaskDefinition> tasks = MilestoneContentConfig.pool(
+                MilestoneContentConfig.client(), tier, type, tasksFor(type));
+        return index >= 0 && index < tasks.size() ? tasks.get(index) : null;
     }
 
     public static int indexOf(MilestoneType type, String id) {
@@ -294,7 +310,7 @@ public final class MilestoneTaskCatalog {
             }
         }
 
-        int previousIndex = indexOf(record.type(), previousTaskId);
+        int previousIndex = indexOf(record, previousTaskId);
         int start = previousIndex < 0 ? 0 : (previousIndex + 1) % pool.size();
 
         for (int offset = 0; offset < pool.size(); offset++) {

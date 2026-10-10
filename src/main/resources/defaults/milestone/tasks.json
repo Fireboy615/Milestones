@@ -1,0 +1,8 @@
+{
+  "_help": "Add tasks here. type: item, kill, advancement. Use unique IDs; category and difficulty are your own labels.",
+  "tasks": [
+    {"id":"collect_copper","category":"gathering","difficulty":"easy","type":"item","item":"minecraft:copper_ingot","count":16,"clue":"Bring sixteen copper ingots to the Mission Station."},
+    {"id":"hunt_spider","category":"combat","difficulty":"easy","type":"kill","entity":"minecraft:spider","clue":"Personally defeat a spider."},
+    {"id":"mine_diamonds","category":"exploration","difficulty":"hard","type":"advancement","advancement":"minecraft:story/mine_diamond","clue":"Earn the Diamonds! advancement after receiving this task."}
+  ]
+}

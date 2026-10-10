@@ -6,8 +6,13 @@ import net.minecraft.world.entity.EntityType;
 public record KillTaskDefinition(
         String id,
         EntityType<?> target,
-        String clue
+        String clue,
+        int count
 ) implements MilestoneTaskDefinition {
+    public KillTaskDefinition(String id, EntityType<?> target, String clue) {
+        this(id, target, clue, 1);
+    }
+
     @Override
     public MilestoneTaskType type() {
         return MilestoneTaskType.KILL;

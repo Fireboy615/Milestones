@@ -5,6 +5,7 @@ import net.fireboy.milestone.milestone.MilestoneManager;
 import net.fireboy.milestone.milestone.MilestoneRecord;
 import net.fireboy.milestone.resonance.GrowthManager;
 import net.fireboy.milestone.milestone.MilestoneType;
+import net.fireboy.milestone.server.config.MilestoneContentConfig;
 import net.fireboy.milestone.registry.ModBlocks;
 import net.fireboy.milestone.world.WorldSiteSavedData;
 import net.minecraft.core.BlockPos;
@@ -72,8 +73,12 @@ public final class WorldSiteManager {
         List<WorldSiteSavedData.CorePlan> plans = new ArrayList<>();
         Random random = new Random(level.getSeed() ^ 0x71A5D0C01L);
         for (int tier = 0; tier < CORE_COUNT; tier++) {
-            int inner = 200 + (maxRadius - 200) * tier / CORE_COUNT;
-            int outer = 200 + (maxRadius - 200) * (tier + 1) / CORE_COUNT;
+            var settings = MilestoneContentConfig.server().core(tier);
+            if (settings != null && !settings.enabled()) continue;
+            int inner = settings != null && settings.minDistance() > 0
+                    ? settings.minDistance() : 200 + (maxRadius - 200) * tier / CORE_COUNT;
+            int outer = settings != null && settings.maxDistance() > 0
+                    ? settings.maxDistance() : 200 + (maxRadius - 200) * (tier + 1) / CORE_COUNT;
             int x = spawn.getX();
             int z = spawn.getZ();
             for (int attempt = 0; attempt < 768; attempt++) {
@@ -95,7 +100,8 @@ public final class WorldSiteManager {
                 z = candidateZ;
                 break;
             }
-            MilestoneType type = tier == 1 ? MilestoneType.NETHER_GATE : MilestoneType.GENERIC;
+            MilestoneType type = settings != null ? settings.profile()
+                    : tier == 1 ? MilestoneType.NETHER_GATE : MilestoneType.GENERIC;
             plans.add(new WorldSiteSavedData.CorePlan(tier, x, z, type, false, null));
         }
         return plans;
@@ -191,8 +197,11 @@ public final class WorldSiteManager {
     private static void relocateCore(ServerLevel level, WorldSiteSavedData data,
                                      WorldSiteSavedData.CorePlan plan) {
         int maxRadius = maxCoreRadius(level);
-        int inner = 200 + (maxRadius - 200) * plan.tier() / CORE_COUNT;
-        int outer = 200 + (maxRadius - 200) * (plan.tier() + 1) / CORE_COUNT;
+        var settings = MilestoneContentConfig.server().core(plan.tier());
+        int inner = settings != null && settings.minDistance() > 0
+                ? settings.minDistance() : 200 + (maxRadius - 200) * plan.tier() / CORE_COUNT;
+        int outer = settings != null && settings.maxDistance() > 0
+                ? settings.maxDistance() : 200 + (maxRadius - 200) * (plan.tier() + 1) / CORE_COUNT;
         BlockPos spawn = level.getSharedSpawnPos();
         long salt = ((long) plan.x() << 32) ^ (plan.z() & 0xFFFFFFFFL)
                 ^ ((long) plan.tier() * 0x9E3779B97F4A7C15L);
@@ -261,18 +270,21 @@ public final class WorldSiteManager {
             BlockPos top = new BlockPos(x, surface - 1, z);
             if (!isNaturalSolid(level.getBlockState(top))) continue;
 
-            double fraction = 0.055D + 0.90D * plan.tier() / (CORE_COUNT - 1.0D);
+            var settings = MilestoneContentConfig.server().core(plan.tier());
+            double fraction = settings != null ? settings.depthFraction()
+                    : 0.055D + 0.90D * plan.tier() / (CORE_COUNT - 1.0D);
             int targetY = (int) Math.round(surface - Math.max(0, surface - bottom) * fraction);
             targetY = Math.max(bottom, Math.min(surface - 4, targetY));
             for (int vertical : verticalOffsets) {
                 int y = targetY + vertical;
                 if (y < bottom || y > surface - 4) continue;
+                if (settings != null && (y < settings.minY() || y > settings.maxY())) continue;
                 BlockPos center = new BlockPos(x, y, z);
                 if (!chamberSiteValid(level, center)) continue;
                 buildCoreChamber(level, center);
                 if (level.getBlockEntity(center) instanceof MilestoneCoreBlockEntity core) {
                     var record = MilestoneManager.register(level, core);
-                    MilestoneManager.save(level, record.withTypeResetProgress(plan.type()));
+                    MilestoneManager.save(level, record.withTypeResetProgress(plan.type()).withCoreTier(plan.tier()));
                     data.setCorePlaced(plan.tier(), center);
                     // Backdate and materialize the visible surface tip immediately
                     // rather than waiting for another periodic site check.

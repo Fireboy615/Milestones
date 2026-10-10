@@ -2,6 +2,7 @@ package net.fireboy.milestone.client.screen;
 
 import net.fireboy.milestone.Milestone;
 import net.fireboy.milestone.menu.MilestoneMenu;
+import net.fireboy.milestone.server.config.MilestoneContentConfig;
 import net.fireboy.milestone.milestone.MilestoneType;
 import net.fireboy.milestone.task.AdvancementTaskDefinition;
 import net.fireboy.milestone.task.ItemSubmissionTaskDefinition;
@@ -136,11 +137,18 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
             return;
         }
 
-        String name = font.plainSubstrByWidth(menu.milestoneType().displayName(), 103);
+        var core = MilestoneContentConfig.client().core(menu.coreTier());
+        String name = font.plainSubstrByWidth(core == null ? menu.milestoneType().displayName() : core.name(), 103);
         graphics.drawString(font, name, titleLabelX, titleLabelY, VANILLA_TEXT, false);
         graphics.drawString(font, (menu.selectedIndex() + 1) + "/" + menu.availableCount(),
                 112, titleLabelY, MUTED_TEXT, false);
         graphics.drawString(font, "State: " + pretty(menu.milestoneState().name()), 8, 18, MUTED_TEXT, false);
+
+        if (!menu.prerequisitesMet()) {
+            graphics.drawString(font, "Complete the required Core first.", 8, 42, INCOMPLETE_TEXT, false);
+            graphics.drawString(font, playerInventoryTitle, inventoryLabelX, inventoryLabelY, VANILLA_TEXT, false);
+            return;
+        }
 
         if (!menu.structureVerified()) {
             graphics.drawString(font, "Construction required", 8, 37, INCOMPLETE_TEXT, false);
@@ -157,6 +165,8 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
 
         int clueWidth = task instanceof ItemSubmissionTaskDefinition && !menu.taskComplete() ? 136 : 160;
         String clue = task == null ? "No task assigned." : task.clue();
+        if (task instanceof KillTaskDefinition hunt)
+            clue += " (" + menu.killProgress() + "/" + hunt.count() + ")";
         List<FormattedCharSequence> lines = font.split(Component.literal(clue), clueWidth);
         int clueY = 46;
         for (int i = 0; i < Math.min(lines.size(), 4); i++) {
@@ -211,8 +221,8 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
         if (task instanceof ItemSubmissionTaskDefinition) {
             return "Drag the item into the slot.";
         }
-        if (task instanceof KillTaskDefinition) {
-            return "Automatic: killing blow.";
+        if (task instanceof KillTaskDefinition hunt) {
+            return "Kill " + hunt.count() + " target(s) yourself.";
         }
         if (task instanceof AdvancementTaskDefinition) {
             return "Automatic: advancement.";

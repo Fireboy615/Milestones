@@ -10,8 +10,13 @@ public record TaskAssignment(
         String taskId,
         boolean completed,
         long assignedGameTime,
-        long completedGameTime
+        long completedGameTime,
+        int progress
 ) {
+    public TaskAssignment(UUID playerId, String taskId, boolean completed,
+                          long assignedGameTime, long completedGameTime) {
+        this(playerId, taskId, completed, assignedGameTime, completedGameTime, 0);
+    }
     public CompoundTag save() {
         CompoundTag tag = new CompoundTag();
         tag.putUUID("PlayerId", playerId);
@@ -19,6 +24,7 @@ public record TaskAssignment(
         tag.putBoolean("Completed", completed);
         tag.putLong("AssignedGameTime", assignedGameTime);
         tag.putLong("CompletedGameTime", completedGameTime);
+        tag.putInt("Progress", progress);
         return tag;
     }
 
@@ -28,7 +34,8 @@ public record TaskAssignment(
                 tag.getString("TaskId"),
                 tag.getBoolean("Completed"),
                 tag.getLong("AssignedGameTime"),
-                tag.getLong("CompletedGameTime")
+                tag.getLong("CompletedGameTime"),
+                Math.max(0, tag.getInt("Progress"))
         );
     }
 
@@ -36,10 +43,15 @@ public record TaskAssignment(
         if (completed) {
             return this;
         }
-        return new TaskAssignment(playerId, taskId, true, assignedGameTime, gameTime);
+        return new TaskAssignment(playerId, taskId, true, assignedGameTime, gameTime, progress);
+    }
+
+    public TaskAssignment withProgress(int newProgress) {
+        return new TaskAssignment(playerId, taskId, completed, assignedGameTime,
+                completedGameTime, Math.max(0, newProgress));
     }
 
     public TaskAssignment reset() {
-        return new TaskAssignment(playerId, taskId, false, assignedGameTime, -1L);
+        return new TaskAssignment(playerId, taskId, false, assignedGameTime, -1L, 0);
     }
 }

@@ -68,7 +68,9 @@ public final class MilestoneMenu extends AbstractContainerMenu {
     private static final int DATA_AVAILABLE_COUNT = 7;
     private static final int DATA_VERIFIED = 8;
     private static final int DATA_CORE_TIER = 9;
-    private static final int DATA_COUNT = 10;
+    private static final int DATA_KILL_PROGRESS = 10;
+    private static final int DATA_UNLOCKED = 11;
+    private static final int DATA_COUNT = 12;
 
     private final BlockPos stationPos;
     private final ContainerLevelAccess access;
@@ -172,6 +174,8 @@ public final class MilestoneMenu extends AbstractContainerMenu {
                     case DATA_STATE -> record.state().ordinal();
                     case DATA_TYPE -> record.type().ordinal();
                     case DATA_CORE_TIER -> record.coreTier();
+                    case DATA_KILL_PROGRESS -> assignment == null ? 0 : assignment.progress();
+                    case DATA_UNLOCKED -> MilestoneContentConfig.prerequisitesMet(level.getServer(), record) ? 1 : 0;
                     case DATA_CONTRIBUTORS -> record.contributorCount();
                     case DATA_MINIMUM -> record.type().minimumContributors();
                     case DATA_TASK_INDEX -> assignment == null ? -1
@@ -191,6 +195,7 @@ public final class MilestoneMenu extends AbstractContainerMenu {
 
     public BlockPos stationPos() { return stationPos; }
     public int selectedIndex() { return data.get(DATA_SELECTED_INDEX); }
+    public int coreTier() { return data.get(DATA_CORE_TIER); }
     public int availableCount() { return data.get(DATA_AVAILABLE_COUNT); }
 
     public MilestoneState milestoneState() {
@@ -209,9 +214,11 @@ public final class MilestoneMenu extends AbstractContainerMenu {
     public int minimumContributors() { return data.get(DATA_MINIMUM); }
     public boolean taskComplete() { return data.get(DATA_TASK_COMPLETE) != 0; }
     public boolean structureVerified() { return data.get(DATA_VERIFIED) != 0; }
+    public boolean prerequisitesMet() { return data.get(DATA_UNLOCKED) != 0; }
+    public int killProgress() { return data.get(DATA_KILL_PROGRESS); }
 
     public MilestoneTaskDefinition taskDefinition() {
-        if (availableCount() == 0 || !structureVerified()) return null;
+        if (availableCount() == 0 || !structureVerified() || !prerequisitesMet()) return null;
         return MilestoneTaskCatalog.byIndex(milestoneType(), data.get(DATA_CORE_TIER), data.get(DATA_TASK_INDEX));
     }
 

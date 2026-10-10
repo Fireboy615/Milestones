@@ -28,6 +28,7 @@ public record MilestoneRecord(
         MilestoneState state,
         long createdGameTime,
         MilestoneType type,
+        int coreTier,
         UUID discoveredBy,
         long discoveredGameTime,
         Map<UUID, TaskAssignment> assignments,
@@ -52,6 +53,7 @@ public record MilestoneRecord(
                 state,
                 createdGameTime,
                 MilestoneType.GENERIC,
+                -1,
                 null,
                 -1L,
                 Map.of(),
@@ -69,6 +71,7 @@ public record MilestoneRecord(
         tag.putString("State", state.name());
         tag.putLong("CreatedGameTime", createdGameTime);
         tag.putString("Type", type.name());
+        tag.putInt("CoreTier", coreTier);
 
         if (discoveredBy != null) {
             tag.putUUID("DiscoveredBy", discoveredBy);
@@ -146,6 +149,7 @@ public record MilestoneRecord(
                 state,
                 tag.getLong("CreatedGameTime"),
                 type,
+                tag.contains("CoreTier") ? tag.getInt("CoreTier") : -1,
                 discoveredBy,
                 discoveredGameTime,
                 assignments,
@@ -153,9 +157,14 @@ public record MilestoneRecord(
         );
     }
 
+    public MilestoneRecord withCoreTier(int tier) {
+        return new MilestoneRecord(id, dimension, corePos, state, createdGameTime,
+                type, tier, discoveredBy, discoveredGameTime, assignments, contributors);
+    }
+
     public MilestoneRecord withState(MilestoneState newState) {
         return new MilestoneRecord(
-                id, dimension, corePos, newState, createdGameTime, type,
+                id, dimension, corePos, newState, createdGameTime, type, coreTier,
                 discoveredBy, discoveredGameTime, assignments, contributors
         );
     }
@@ -170,14 +179,14 @@ public record MilestoneRecord(
                 ? state
                 : MilestoneState.DISCOVERED;
         return new MilestoneRecord(
-                id, dimension, corePos, resetState, createdGameTime, newType,
+                id, dimension, corePos, resetState, createdGameTime, newType, coreTier,
                 discoveredBy, discoveredGameTime, Map.of(), Set.of()
         );
     }
 
     public MilestoneRecord withDiscovery(UUID finder, long gameTime) {
         return new MilestoneRecord(
-                id, dimension, corePos, MilestoneState.DISCOVERED, createdGameTime, type,
+                id, dimension, corePos, MilestoneState.DISCOVERED, createdGameTime, type, coreTier,
                 finder, gameTime, assignments, contributors
         );
     }
@@ -190,9 +199,17 @@ public record MilestoneRecord(
         LinkedHashMap<UUID, TaskAssignment> updated = new LinkedHashMap<>(assignments);
         updated.put(assignment.playerId(), assignment);
         return new MilestoneRecord(
-                id, dimension, corePos, state, createdGameTime, type,
+                id, dimension, corePos, state, createdGameTime, type, coreTier,
                 discoveredBy, discoveredGameTime, updated, contributors
         );
+    }
+
+    public MilestoneRecord updateAssignment(TaskAssignment assignment) {
+        if (!assignments.containsKey(assignment.playerId())) return this;
+        LinkedHashMap<UUID, TaskAssignment> updated = new LinkedHashMap<>(assignments);
+        updated.put(assignment.playerId(), assignment);
+        return new MilestoneRecord(id, dimension, corePos, state, createdGameTime, type,
+                coreTier, discoveredBy, discoveredGameTime, updated, contributors);
     }
 
     public MilestoneRecord completeTask(UUID playerId, long gameTime) {
@@ -208,7 +225,7 @@ public record MilestoneRecord(
         updatedContributors.add(playerId);
 
         return new MilestoneRecord(
-                id, dimension, corePos, state, createdGameTime, type,
+                id, dimension, corePos, state, createdGameTime, type, coreTier,
                 discoveredBy, discoveredGameTime, updatedAssignments, updatedContributors
         );
     }
@@ -221,7 +238,7 @@ public record MilestoneRecord(
         updatedContributors.remove(playerId);
 
         return new MilestoneRecord(
-                id, dimension, corePos, state, createdGameTime, type,
+                id, dimension, corePos, state, createdGameTime, type, coreTier,
                 discoveredBy, discoveredGameTime, updatedAssignments, updatedContributors
         );
     }
@@ -233,7 +250,7 @@ public record MilestoneRecord(
         LinkedHashSet<UUID> updated = new LinkedHashSet<>(contributors);
         updated.add(playerId);
         return new MilestoneRecord(
-                id, dimension, corePos, state, createdGameTime, type,
+                id, dimension, corePos, state, createdGameTime, type, coreTier,
                 discoveredBy, discoveredGameTime, assignments, updated
         );
     }
@@ -249,7 +266,7 @@ public record MilestoneRecord(
                 : MilestoneState.DISCOVERED;
 
         return new MilestoneRecord(
-                id, dimension, corePos, resetState, createdGameTime, type,
+                id, dimension, corePos, resetState, createdGameTime, type, coreTier,
                 discoveredBy, discoveredGameTime, resetAssignments, Set.of()
         );
     }
