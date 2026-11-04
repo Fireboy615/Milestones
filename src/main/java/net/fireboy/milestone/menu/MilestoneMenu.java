@@ -56,6 +56,7 @@ public final class MilestoneMenu extends AbstractContainerMenu {
     public static final int BUTTON_DEBUG_COMPLETE_TASK = 9;
     public static final int BUTTON_DEBUG_FAKE_CONTRIBUTOR = 10;
     public static final int BUTTON_DEBUG_CLEAR_PROGRESS = 11;
+    public static final int BUTTON_SUBMIT_READY = 12;
 
     public static final int SUBMISSION_SLOT_X = 150;
     public static final int SUBMISSION_SLOT_Y = 47;
@@ -72,7 +73,7 @@ public final class MilestoneMenu extends AbstractContainerMenu {
     private static final int DATA_STATE = 0;
     private static final int DATA_TYPE = 1;
     private static final int DATA_CONTRIBUTORS = 2;
-    private static final int DATA_MINIMUM = 3;
+    private static final int DATA_COMPLETION_TARGET = 3;
     private static final int DATA_TASK_INDEX = 4;
     private static final int DATA_TASK_COMPLETE = 5;
     private static final int DATA_SELECTED_INDEX = 6;
@@ -82,7 +83,8 @@ public final class MilestoneMenu extends AbstractContainerMenu {
     private static final int DATA_KILL_PROGRESS = 10;
     private static final int DATA_UNLOCKED = 11;
     private static final int DATA_ADMIN = 12;
-    private static final int DATA_COUNT = 13;
+    private static final int DATA_READY = 13;
+    private static final int DATA_COUNT = 14;
 
     private final BlockPos stationPos;
     private final ContainerLevelAccess access;
@@ -191,10 +193,11 @@ public final class MilestoneMenu extends AbstractContainerMenu {
                     case DATA_KILL_PROGRESS -> assignment == null ? 0 : assignment.progress();
                     case DATA_UNLOCKED -> MilestoneContentConfig.prerequisitesMet(level.getServer(), record) ? 1 : 0;
                     case DATA_CONTRIBUTORS -> record.contributorCount();
-                    case DATA_MINIMUM -> record.type().minimumContributors();
+                    case DATA_COMPLETION_TARGET -> MilestoneContentConfig.finalThreshold(record);
                     case DATA_TASK_INDEX -> assignment == null ? -1
                             : MilestoneTaskCatalog.indexOf(record, assignment.taskId());
                     case DATA_TASK_COMPLETE -> assignment != null && assignment.completed() ? 1 : 0;
+                    case DATA_READY -> assignment != null && assignment.readyToSubmit() ? 1 : 0;
                     default -> 0;
                 };
             }
@@ -225,8 +228,9 @@ public final class MilestoneMenu extends AbstractContainerMenu {
     }
 
     public int contributorCount() { return data.get(DATA_CONTRIBUTORS); }
-    public int minimumContributors() { return data.get(DATA_MINIMUM); }
+    public int requiredForCompletion() { return data.get(DATA_COMPLETION_TARGET); }
     public boolean taskComplete() { return data.get(DATA_TASK_COMPLETE) != 0; }
+    public boolean taskReady() { return data.get(DATA_READY) != 0; }
     public boolean structureVerified() { return data.get(DATA_VERIFIED) != 0; }
     public boolean prerequisitesMet() { return data.get(DATA_UNLOCKED) != 0; }
     public int killProgress() { return data.get(DATA_KILL_PROGRESS); }
@@ -242,9 +246,15 @@ public final class MilestoneMenu extends AbstractContainerMenu {
         return definition == null ? null : definition.type();
     }
 
-    public MilestoneType.RewardThreshold nextThreshold() {
+    public int finalThreshold() {
+        return MilestoneContentConfig.finalThreshold(
+                MilestoneContentConfig.client(), coreTier(), milestoneType());
+    }
+
+    public MilestoneContentConfig.RewardStage nextThreshold() {
         return availableCount() == 0 ? null
-                : milestoneType().nextThresholdAfter(contributorCount());
+                : MilestoneContentConfig.nextRewardStage(
+                        MilestoneContentConfig.client(), coreTier(), milestoneType(), contributorCount());
     }
 
     private ItemSubmissionTaskDefinition itemSubmissionTask() {
@@ -337,6 +347,11 @@ public final class MilestoneMenu extends AbstractContainerMenu {
             broadcastChanges();
             return true;
         }
+        if (id == BUTTON_SUBMIT_READY && selectedMilestoneId() != null) {
+            MilestoneGameplayManager.submitReadyFromStation(serverLevel, selectedMilestoneId(), serverPlayer);
+            broadcastChanges();
+            return true;
+        }
         if (id != BUTTON_SUBMIT_MAIN_HAND || selectedMilestoneId() == null
                 || !(taskDefinition() instanceof ItemSubmissionTaskDefinition)) return false;
         MilestoneGameplayManager.submitFromStation(serverLevel, selectedMilestoneId(),
@@ -381,7 +396,7 @@ public final class MilestoneMenu extends AbstractContainerMenu {
                         MilestoneContentConfig.prerequisitesMet(serverLevel.getServer(),record),
                         ChatFormatting.GRAY);
                 debugMessage(player,"Contributors "+record.contributorCount()+
-                        " / "+record.type().finalThreshold()+" | Assignments "+
+                        " / "+MilestoneContentConfig.finalThreshold(record)+" | Assignments "+
                         record.assignments().size()+" | Config pool "+
                         MilestoneTaskCatalog.tasksFor(record).size(),ChatFormatting.GRAY);
                 debugMessage(player,"Your assignment: "+(assignment==null?"none":

@@ -15,6 +15,7 @@ import net.fireboy.milestone.milestone.MilestoneUnlock;
 import net.fireboy.milestone.milestone.MilestoneState;
 import net.fireboy.milestone.milestone.MilestoneType;
 import net.fireboy.milestone.registry.ModBlocks;
+import net.fireboy.milestone.server.config.MilestoneContentConfig;
 import net.fireboy.milestone.resonance.GrowthManager;
 import net.fireboy.milestone.resonance.GrowthPlan;
 import net.fireboy.milestone.resonance.ResonanceManager;
@@ -56,6 +57,16 @@ public final class MilestoneCommands {
                                 .executes(MilestoneCommands::info))
                         .then(Commands.literal("list")
                                 .executes(MilestoneCommands::list))
+                        // Core numbers match Config > Cores (1-based, not the
+                        // zero-based tier or the persisted milestone UUID).
+                        .then(Commands.literal("discover")
+                                .then(Commands.argument("coreId", IntegerArgumentType.integer(1, 32))
+                                        .suggests((context, builder) -> {
+                                            for (int tier : MilestoneContentConfig.server().cores().keySet())
+                                                builder.suggest(tier + 1);
+                                            return builder.buildFuture();
+                                        })
+                                        .executes(MilestoneCommands::discover)))
                         .then(Commands.literal("unlocks")
                                 .executes(MilestoneCommands::unlocks)
                                 .then(Commands.literal("clear")
@@ -192,8 +203,10 @@ public final class MilestoneCommands {
         for (MilestoneRecord record : records) {
             source.sendSuccess(
                     () -> Component.literal(
-                            "- " + shortId(record) +
-                                    " " + record.state().name() +
+                            "- Core " + (record.coreTier() >= 0
+                                    ? Integer.toString(record.coreTier() + 1) : "(unassigned)")
+                                    + " [" + shortId(record) + "]"
+                                    + " " + record.state().name() +
                                     " contributors=" + record.contributorCount() +
                                     " @ " + formatPos(record.corePos()) +
                                     " [" + record.dimension() + "]"
@@ -202,6 +215,58 @@ public final class MilestoneCommands {
             );
         }
         return records.size();
+    }
+
+    /**
+     * Discover a generated Milestone Core by its editor number. This uses
+     * SavedData rather than the nearby block, so the operator never has to
+     * travel to the site or force-load remote chunks.
+     */
+    private static int discover(CommandContext<CommandSourceStack> context) {
+        CommandSourceStack source = context.getSource();
+        ServerPlayer operator = source.getPlayer();
+        if (operator == null) {
+            source.sendFailure(Component.literal("Run this debug command as a player."));
+            return 0;
+        }
+        int coreId = IntegerArgumentType.getInteger(context, "coreId");
+        int tier = coreId - 1;
+        var records = MilestoneManager.data(source.getServer()).all().stream()
+                .filter(record -> record.coreTier() == tier)
+                .toList();
+        if (records.isEmpty()) {
+            source.sendFailure(Component.literal("Core " + coreId
+                    + " has not generated/registered in this world yet. "
+                    + "Only generated Cores can be discovered; use /milestone list to check."));
+            return 0;
+        }
+        if (records.size() > 1) {
+            source.sendFailure(Component.literal("Core " + coreId
+                    + " has multiple registered sites. Refusing an ambiguous discovery."));
+            return 0;
+        }
+        MilestoneRecord record = records.get(0);
+        if (record.discoveredBy() != null) {
+            source.sendSuccess(() -> Component.literal("Core " + coreId
+                    + " is already discovered. Open the Mission Station to test it."), false);
+            return 1;
+        }
+        ServerLevel owningLevel = MilestoneManager.levelFor(source.getServer(), record);
+        if (owningLevel == null) {
+            source.sendFailure(Component.literal("Core " + coreId
+                    + "'s dimension is not currently available: " + record.dimension()));
+            return 0;
+        }
+        if (!MilestoneGameplayManager.debugDiscover(owningLevel, record, operator)) {
+            source.sendFailure(Component.literal("Core " + coreId
+                    + " cannot be discovered in state " + record.state() + "."));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("Debug-discovered Core " + coreId
+                + " (" + record.dimension() + " @ " + formatPos(record.corePos())
+                + "). It is now listed at the Mission Station and in /milestonejournal. "
+                + "No contributions or rewards were granted."), true);
+        return 1;
     }
 
     private static int unlocks(CommandContext<CommandSourceStack> context) {
@@ -500,7 +565,7 @@ public final class MilestoneCommands {
                                 " started, " + completedBranches + " mature" +
                                 " | target=" + formatPos(plan.end()) +
                                 " | step=" + GrowthManager.POSITIONS_PER_STEP +
-                                " centreline point every " + GrowthManager.GROWTH_TICK_INTERVAL + " ticks"
+                                " centreline point every " + GrowthManager.growthTickInterval() + " ticks"
                 ),
                 false
         );

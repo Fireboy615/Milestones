@@ -27,40 +27,36 @@ import java.util.Collections;
  * Adding/removing profiles and editing fields change a draft until Save.
  */
 public final class MilestoneConfigScreen extends Screen {
-    private enum Page { HOME, CORES, CORE_EDIT, TASKS, TASK_EDIT, SCHEMATICS, SCHEMATIC_EDIT, SCHEMATIC_IMPORT, SHOP, CATEGORY_PICK, CATEGORY_ADD }
+    private enum Page { HOME, CORES, CORE_CREATE, CORE_EDIT, CORE_SPAWN, CORE_TASKS, CORE_GROUP_PICK, CORE_SCHEMATIC_PICK, CORE_FILE_PICK, TASKS, TASK_EDIT, SCHEMATICS, SCHEMATIC_EDIT, SCHEMATIC_IMPORT, SHOP, GROWTH, CATEGORY_PICK, CATEGORY_ADD }
     private record TaskRow(int index, JsonObject value) {}
     private record Field(String key, String label) {}
 
+    // Main Core screen: the most useful choices, in setup order.
     private static final Field[] CORE_FIELDS = {
             new Field("name", "Name"),
-            new Field("enabled", "Spawn enabled"),
-            new Field("profile", "Milestone type"),
-            new Field("task_mode", "Task selection"),
-            new Field("difficulty", "Difficulty"),
-            new Field("categories", "Task categories"),
-            new Field("task_ids", "Manual task IDs"),
-            new Field("requires_completed_cores", "Required Core IDs"),
-            new Field("dimension", "Dimension"),
+            new Field("color", "Colour (#RRGGBB)"),
+            new Field("schematic", "Schematic"),
+            new Field("structure_type", "Core structure (later)")
+    };
+    private static final Field[] CORE_SPAWN_FIELDS = {
+            new Field("dimension", "Spawn dimension"),
             new Field("allowed_biomes", "Allowed biomes"),
             new Field("blocked_biomes", "Blocked biomes"),
             new Field("min_y", "Minimum Y"),
             new Field("max_y", "Maximum Y"),
-            new Field("min_distance", "Min spawn distance"),
-            new Field("max_distance", "Max spawn distance"),
-            new Field("depth_fraction", "Depth (0 - 1)"),
-            new Field("schematic", "Schematic"),
-            new Field("color", "Core color hex"),
-            new Field("reward_xp", "Reward XP"),
-            new Field("reward_items", "Reward items"),
-            new Field("reward_commands", "Reward commands")
+            new Field("min_distance", "Minimum distance"),
+            new Field("max_distance", "Maximum distance"),
+            new Field("depth_fraction", "Depth (0-1)")
+    };
+    private static final Field[] CORE_TASK_FIELDS = {
+            new Field("task_group", "Task group"),
+            new Field("requires_completed_cores", "Required Core IDs")
     };
     private static final Field[] TASK_FIELDS = {
             new Field("id", "Task ID"),
             new Field("type", "Task type"),
             new Field("target", "Item / Entity / Advancement"),
             new Field("count", "Required amount"),
-            new Field("category", "Category"),
-            new Field("difficulty", "Difficulty"),
             new Field("clue", "Task description")
     };
     private static final Field[] SCHEMATIC_FIELDS = {
@@ -92,6 +88,9 @@ public final class MilestoneConfigScreen extends Screen {
     private boolean draggingScrollbar;
     private Page categoryReturnPage = Page.TASK_EDIT;
     private EditBox newCategoryBox;
+    private EditBox growthSpeedBox;
+    private EditBox coreNameBox;
+    private boolean pickSchematicForCore;
     private boolean dirty;
     private boolean waitingForServer;
     private boolean loadedServer;
@@ -163,20 +162,28 @@ public final class MilestoneConfigScreen extends Screen {
         return count;
     }
     private List<TaskRow> filteredTasks() {
-        List<String> cs = categories(), ds = difficulties();
-        String category = categoryFilter == 0 ? "" : cs.get(Math.floorMod(categoryFilter - 1, cs.size()));
-        String difficulty = difficultyFilter == 0 ? "" : ds.get(Math.floorMod(difficultyFilter - 1, ds.size()));
-        List<TaskRow> filtered = new ArrayList<>();
-        for (int i=0; i<tasks().size(); i++) {
-            JsonObject t = tasks().get(i).getAsJsonObject();
-            if (!category.isEmpty() && !category.equals(t.get("category").getAsString())) continue;
-            if (!difficulty.isEmpty() && !difficulty.equals(t.get("difficulty").getAsString())) continue;
-            filtered.add(new TaskRow(i,t));
+        List<TaskRow> all = new ArrayList<>();
+        for (int i = 0; i < tasks().size(); i++)
+            all.add(new TaskRow(i, tasks().get(i).getAsJsonObject()));
+        all.sort(Comparator.comparing(row -> row.value().get("id").getAsString()));
+        return all;
+    }
+
+    private JsonArray taskGroups() {
+        JsonObject root = tasksRoot();
+        if (!root.has("groups")) root.add("groups", new JsonArray());
+        return root.getAsJsonArray("groups");
+    }
+
+    private String taskGroupLabel(String id) {
+        if (id == null || id.isBlank()) return "Legacy pool (select a group)";
+        for (JsonElement entry : taskGroups()) {
+            JsonObject group = entry.getAsJsonObject();
+            if (group.get("id").getAsString().equals(id))
+                return group.get("name").getAsString()
+                        + " (" + group.getAsJsonArray("task_ids").size() + " tasks)";
         }
-        filtered.sort(Comparator.comparing((TaskRow row) ->
-                rarityRank(row.value().get("difficulty").getAsString()))
-                .thenComparing(row -> row.value().get("id").getAsString()));
-        return filtered;
+        return "Missing group: " + id;
     }
     private static int rarityRank(String rarity) {
         int found = BASIC_DIFFICULTIES.indexOf(rarity);
@@ -231,6 +238,33 @@ public final class MilestoneConfigScreen extends Screen {
                 || draft.getAsJsonObject("cores").get("enabled").getAsBoolean();
     }
 
+    private int growthInterval() {
+        JsonObject config = draft.getAsJsonObject("cores");
+        return config.has("growth_interval_ticks") ? config.get("growth_interval_ticks").getAsInt()
+                : MilestoneContentConfig.DEFAULT_GROWTH_INTERVAL_TICKS;
+    }
+
+    private boolean saveGrowthSpeed() {
+        if (page != Page.GROWTH || growthSpeedBox == null) return true;
+        try {
+            int ticks = Integer.parseInt(growthSpeedBox.getValue().trim());
+            if (ticks < 1 || ticks > MilestoneContentConfig.MAX_GROWTH_INTERVAL_TICKS)
+                throw new IllegalArgumentException("Use 1-1200 ticks");
+            if (ticks != growthInterval()) {
+                draft.getAsJsonObject("cores").addProperty("growth_interval_ticks", ticks);
+                dirty = true;
+                status = "Growth speed changed - press Save";
+            }
+            return true;
+        } catch (NumberFormatException e) {
+            status = "Growth interval must be a whole number (1-1200)";
+            return false;
+        } catch (IllegalArgumentException e) {
+            status = e.getMessage();
+            return false;
+        }
+    }
+
     @Override
     protected void init() {
         if (connected() && canEdit() && !dirty && !waitingForServer && !loadedServer && !saving) {
@@ -255,40 +289,183 @@ public final class MilestoneConfigScreen extends Screen {
                         refresh();
                     }).bounds(l + w - 115, t + 13, 105, 20).build()).active = canEdit();
 
-            int bw = Math.min(240, w - 45);
-            int by = t + 36;
-            int step = Math.max(22,Math.min(31,(panelHeight()-111)/4));
+            // Two columns leave room for additional configuration sections on small screens.
+            int bw = Math.min(185, Math.max(80, (w - 45) / 2));
+            int x1 = mid - bw - 4, x2 = mid + 4;
+            int by = t + 48, step = 34;
             addRenderableWidget(Button.builder(Component.literal("Cores"),
-                    b -> navigate(Page.CORES)).bounds(mid - bw / 2, by, bw, 23).build());
+                    b -> navigate(Page.CORES)).bounds(x1, by, bw, 23).build());
             addRenderableWidget(Button.builder(Component.literal("Tasks"),
-                    b -> navigate(Page.TASKS)).bounds(mid - bw / 2, by + 1 * step, bw, 23).build());
+                    b -> navigate(Page.TASKS)).bounds(x2, by, bw, 23).build());
             addRenderableWidget(Button.builder(Component.literal("Schematics"),
-                    b -> navigate(Page.SCHEMATICS)).bounds(mid - bw / 2, by + 2 * step, bw, 23).build());
-            addRenderableWidget(Button.builder(Component.literal("Unlocks"),
+                    b -> navigate(Page.SCHEMATICS)).bounds(x1, by + step, bw, 23).build());
+            addRenderableWidget(Button.builder(Component.literal("Growth Speed"),
+                    b -> navigate(Page.GROWTH)).bounds(x2, by + step, bw, 23).build());
+            // Recipe/dimension unlock rewards are configured per Core now.
+            // Keep legacy feature-lock data loaded for compatibility, but
+            // don't expose its redundant editor from the home screen.
+            addRenderableWidget(Button.builder(Component.literal("Loot Tables"),
                     b -> {
-                        if (minecraft != null) minecraft.setScreen(
-                                new MilestoneUnlocksScreen(this, draft));
-                    }).bounds(mid - bw / 2, by + 3 * step, bw, 23).build());
+                        if (minecraft != null)
+                            minecraft.setScreen(new MilestoneLootScreen(this));
+                    }).bounds(x1, by + 2 * step, bw, 23).build())
+                    .active=canEdit()&&!waitingForServer;
             addRenderableWidget(Button.builder(Component.literal("Shop"),
                     b -> {
                         if (minecraft != null)
                             minecraft.setScreen(new MilestoneShopConfigScreen(this,draft));
-                    }).bounds(mid - bw / 2, by + 4 * step, bw, 23).build());
+                    }).bounds(x2, by + 2 * step, bw, 23).build())
+                    .active=canEdit()&&!waitingForServer;
             return;
         }
 
         addRenderableWidget(Button.builder(Component.literal("< Back"),
                 b -> navigate(switch (page) {
+                    case CORE_CREATE -> Page.CORES;
+                    case CORE_GROUP_PICK -> Page.CORE_TASKS;
+                    case CORE_SCHEMATIC_PICK, CORE_SPAWN, CORE_TASKS -> Page.CORE_EDIT;
+                    case CORE_FILE_PICK -> Page.CORE_SCHEMATIC_PICK;
                     case CORE_EDIT -> Page.CORES;
                     case TASK_EDIT -> Page.TASKS;
                     case SCHEMATIC_EDIT -> Page.SCHEMATICS;
-                    case SCHEMATIC_IMPORT -> Page.SCHEMATICS;
+                    case SCHEMATIC_IMPORT -> pickSchematicForCore ? Page.CORE_SCHEMATIC_PICK : Page.SCHEMATICS;
                     case CATEGORY_PICK -> Page.CORE_EDIT;
                     case CATEGORY_ADD -> categoryReturnPage;
                     default -> Page.HOME;
                 })).bounds(l + 10, t + 10, 77, 20).build());
 
+        if (page == Page.CORE_EDIT) {
+            int actionX = l + 16, actionWidth = w - 45;
+            addRenderableWidget(Button.builder(Component.literal("Contribution Rewards"),
+                    b -> {
+                        if (!collectFields() || core() == null || minecraft == null) return;
+                        minecraft.setScreen(new MilestoneRewardStagesScreen(this, core(), draft));
+                    }).bounds(actionX, t + 175, actionWidth, 23).build()).active = canEdit();
+            addRenderableWidget(Button.builder(Component.literal("Spawn Rules"),
+                    b -> navigate(Page.CORE_SPAWN))
+                    .bounds(actionX, t + 205, actionWidth, 23).build()).active = canEdit();
+            addRenderableWidget(Button.builder(Component.literal("Tasks & Prerequisites"),
+                    b -> navigate(Page.CORE_TASKS))
+                    .bounds(actionX, t + 235, actionWidth, 23).build()).active = canEdit();
+        }
         if (page == Page.SHOP) return;
+        if (page == Page.CORE_CREATE) {
+            coreNameBox = new EditBox(font, l + 30, t + 98, w - 60, 22,
+                    Component.literal("Name of new Milestone Core"));
+            coreNameBox.setMaxLength(80);
+            coreNameBox.setHint(Component.literal("Enter the Core's name"));
+            addRenderableWidget(coreNameBox);
+            addRenderableWidget(Button.builder(Component.literal("Create Core"),
+                    b -> createNamedCore()).bounds(mid - 85, t + 147, 170, 22).build())
+                    .active = canEdit();
+            setInitialFocus(coreNameBox);
+            return;
+        }
+        if (page == Page.CORE_GROUP_PICK) {
+            List<JsonObject> groups = new ArrayList<>();
+            for (JsonElement entry : taskGroups()) groups.add(entry.getAsJsonObject());
+            if (groups.isEmpty()) {
+                addRenderableWidget(Button.builder(Component.literal("Create a Task Group in Tasks"),
+                        b -> {
+                            if (minecraft != null) minecraft.setScreen(
+                                    new MilestoneTaskGroupsScreen(this, draft));
+                        }).bounds(l + 30, t + 91, w - 60, 23).build()).active = canEdit();
+            } else {
+                int visible = Math.max(1, (panelHeight() - 144) / 25);
+                listScroll = Math.min(listScroll, Math.max(0, groups.size() - visible));
+                for (int i = listScroll; i < Math.min(groups.size(), listScroll + visible); i++) {
+                    JsonObject group = groups.get(i);
+                    int y = t + 61 + (i - listScroll) * 25;
+                    String id = group.get("id").getAsString();
+                    String label = group.get("name").getAsString() + " ("
+                            + group.getAsJsonArray("task_ids").size() + " tasks)";
+                    addRenderableWidget(Button.builder(Component.literal(font.plainSubstrByWidth(label,w-55)),
+                            b -> {
+                                core().addProperty("task_group", id);
+                                dirty = true;
+                                page = Page.CORE_TASKS;
+                                listScroll = 0;
+                                refresh();
+                            }).bounds(l + 20, y, w - 40, 21).build()).active = canEdit();
+                }
+                addPickerNavigation(groups.size(), visible);
+            }
+            return;
+        }
+        if (page == Page.CORE_SCHEMATIC_PICK) {
+            int visible = Math.max(1, (panelHeight() - 188) / 25);
+            int total = schematics().size() + 1;
+            listScroll = Math.min(listScroll, Math.max(0, total - visible));
+            for (int index = listScroll; index < Math.min(total, listScroll + visible); index++) {
+                int y = t + 58 + (index - listScroll) * 25;
+                String id, label;
+                if (index == 0) { id = "generated"; label = "Default generated chamber"; }
+                else {
+                    JsonObject schematic = schematics().get(index - 1).getAsJsonObject();
+                    id = schematic.get("id").getAsString();
+                    label = schematic.get("name").getAsString();
+                }
+                addRenderableWidget(Button.builder(Component.literal(font.plainSubstrByWidth(label, w - 55)),
+                        b -> chooseCoreSchematic(id)).bounds(l + 20, y, w - 40, 21).build());
+            }
+            addPickerNavigation(total, visible);
+            addRenderableWidget(Button.builder(Component.literal("Select from .nbt folder"),
+                    b -> { listScroll = 0; page = Page.CORE_FILE_PICK; refresh(); })
+                    .bounds(l + 20, bottom() - 100, (w - 49) / 2, 21).build())
+                    .active = canEdit() && canImportLocal();
+            addRenderableWidget(Button.builder(Component.literal("Open folder"),
+                    b -> openSchematicFolder())
+                    .bounds(l + 25 + (w - 49) / 2, bottom() - 100, (w - 49) / 2, 21).build());
+            addRenderableWidget(Button.builder(Component.literal("Import Create .nbt"),
+                    b -> {
+                        pickSchematicForCore = true;
+                        listScroll = 0;
+                        page = Page.SCHEMATIC_IMPORT; refresh();
+                    }).bounds(l + 20, bottom() - 74, w - 40, 21).build())
+                    .active = canEdit() && canImportLocal();
+            return;
+        }
+        if (page == Page.CORE_FILE_PICK) {
+            List<java.nio.file.Path> files = configuredSchematicFiles();
+            int visible = Math.max(1, (panelHeight() - 144) / 25);
+            listScroll = Math.min(listScroll, Math.max(0, files.size() - visible));
+            for (int i = listScroll; i < Math.min(files.size(), listScroll + visible); i++) {
+                var file = files.get(i);
+                int y = t + 61 + (i - listScroll) * 25;
+                addRenderableWidget(Button.builder(Component.literal(font.plainSubstrByWidth(
+                        file.getFileName().toString(), w - 55)),
+                        b -> selectConfiguredSchematic(file)).bounds(l + 20, y, w - 40, 21).build());
+            }
+            addPickerNavigation(files.size(), visible);
+            if (files.isEmpty()) {
+                addRenderableWidget(Button.builder(Component.literal("Open .nbt folder"),
+                        b -> openSchematicFolder()).bounds(l + 45, t + 94, w - 90, 22).build());
+            }
+            return;
+        }
+        if (page == Page.GROWTH) {
+            growthSpeedBox = new EditBox(font, mid - 95, t + 90, 190, 20,
+                    Component.literal("Ticks per Resonant growth update"));
+            growthSpeedBox.setMaxLength(4);
+            growthSpeedBox.setValue(Integer.toString(growthInterval()));
+            growthSpeedBox.setEditable(canEdit());
+            addRenderableWidget(growthSpeedBox);
+            int presetWidth = Math.min(98, Math.max(60, (w - 48) / 3));
+            int x = mid - (3 * presetWidth + 12) / 2;
+            addRenderableWidget(Button.builder(Component.literal("Fast (4)"),
+                    b -> setGrowthPreset(4))
+                    .bounds(x, t + 147, presetWidth, 20).build()).active=canEdit();
+            addRenderableWidget(Button.builder(Component.literal("Normal (40)"),
+                    b -> setGrowthPreset(40))
+                    .bounds(x + presetWidth + 6, t + 147, presetWidth, 20).build()).active=canEdit();
+            addRenderableWidget(Button.builder(Component.literal("Slow (200)"),
+                    b -> setGrowthPreset(200))
+                    .bounds(x + 2 * (presetWidth + 6), t + 147, presetWidth, 20).build()).active=canEdit();
+            addRenderableWidget(Button.builder(Component.literal("Apply Speed"),
+                    b -> { if (saveGrowthSpeed()) refresh(); })
+                    .bounds(mid - 75, t + 181, 150, 20).build()).active=canEdit();
+            return;
+        }
         if (page == Page.SCHEMATICS || page == Page.SCHEMATIC_EDIT)
             addRenderableWidget(Button.builder(Component.literal("Open NBT folder"),
                 b -> openSchematicFolder()).bounds(l+w-149,t+10,135,20).build());
@@ -336,18 +513,12 @@ public final class MilestoneConfigScreen extends Screen {
                             (isCore ? cores().size() < 32 : isSchematic ? schematics().size() < 64 : tasks().size() < 80);
 
             if (!isCore && !isSchematic) {
-                String selectedDifficulty = difficultyFilter == 0 ? "All difficulties"
-                        : difficulties().get(Math.floorMod(difficultyFilter-1, difficulties().size()));
-                String selectedCategory = categoryFilter == 0 ? "All categories"
-                        : categories().get(Math.floorMod(categoryFilter-1, categories().size()));
-                addRenderableWidget(Button.builder(Component.literal(selectedDifficulty),
-                        b -> { difficultyFilter = (difficultyFilter+1)%(difficulties().size()+1);
-                            listScroll=0;refresh(); })
-                        .bounds(l+12,t+68,(w-33)/2,20).build());
-                addRenderableWidget(Button.builder(Component.literal(selectedCategory),
-                        b -> {categoryFilter=(categoryFilter+1)%(categories().size()+1);
-                            listScroll=0;refresh();})
-                        .bounds(l+16+(w-33)/2,t+68,(w-33)/2,20).build());
+                addRenderableWidget(Button.builder(Component.literal(
+                        "Task Groups (" + taskGroups().size() + ")"),
+                        b -> {
+                            if (minecraft != null)
+                                minecraft.setScreen(new MilestoneTaskGroupsScreen(this, draft));
+                        }).bounds(l+12,t+68,w-34,20).build());
             }
 
             if (isSchematic)
@@ -369,7 +540,7 @@ public final class MilestoneConfigScreen extends Screen {
                 String name = isCore
                     ? "Core " + (id+1) + " - " + entry.get("name").getAsString()
                     : isSchematic ? entry.get("name").getAsString() + " (" + entry.get("file").getAsString() + ")"
-                    : "[" + entry.get("difficulty").getAsString() + "] " + entry.get("id").getAsString();
+                    : entry.get("id").getAsString();
                 int y = t + contentTopOffset() + (i-listScroll)*25;
                 addRenderableWidget(Button.builder(Component.literal(font.plainSubstrByWidth(name,w-149)),
                         b -> openEditor(id)).bounds(l+12,y,w-115,21).build());
@@ -400,6 +571,8 @@ public final class MilestoneConfigScreen extends Screen {
 
         // Edit all Core/Task settings in rows, with mouse wheel scrolling.
         Field[] fields = page == Page.CORE_EDIT ? CORE_FIELDS
+                : page == Page.CORE_SPAWN ? CORE_SPAWN_FIELDS
+                : page == Page.CORE_TASKS ? CORE_TASK_FIELDS
                 : page == Page.SCHEMATIC_EDIT ? SCHEMATIC_FIELDS : TASK_FIELDS;
         int fit = visibleRows();
         fieldScroll = Math.min(smoothRows.first(),Math.max(0,fields.length-fit));
@@ -411,11 +584,18 @@ public final class MilestoneConfigScreen extends Screen {
             int y = t + 65 + (i - fieldScroll) * 24;
             if (isToggle(field.key()) || field.key().equals("category")
                     || field.key().equals("difficulty") || field.key().equals("categories")
-                    || field.key().equals("schematic")) {
+                    || field.key().equals("schematic") || field.key().equals("task_group")
+                    || field.key().equals("unlock_category") || field.key().equals("structure_type")) {
                 String label = field.key().equals("categories")
                         ? field.label() + ": select (" + core().getAsJsonArray("categories").size() + ")"
                         : field.key().equals("schematic")
                         ? field.label() + ": " + schematicLabel(core().get("schematic").getAsString())
+                        : field.key().equals("task_group")
+                        ? "Task group: " + taskGroupLabel(fieldValue(field))
+                        : field.key().equals("unlock_category")
+                        ? "Category: " + fieldValue(field)
+                        : field.key().equals("structure_type")
+                        ? "Core structure (planned): " + fieldValue(field)
                         : field.label() + ": " + fieldValue(field);
                 addRenderableWidget(Button.builder(Component.literal(
                                 font.plainSubstrByWidth(label,w-45)),
@@ -424,7 +604,13 @@ public final class MilestoneConfigScreen extends Screen {
                             if (field.key().equals("categories")) {
                                 page=Page.CATEGORY_PICK;listScroll=0;refresh();
                             } else if (field.key().equals("schematic")) {
-                                cycleSchematic();
+                                listScroll = 0; page = Page.CORE_SCHEMATIC_PICK; refresh();
+                            } else if (field.key().equals("task_group")) {
+                                listScroll = 0; page = Page.CORE_GROUP_PICK; refresh();
+                            } else if (field.key().equals("unlock_category")) {
+                                cycleUnlockCategory();
+                            } else if (field.key().equals("structure_type")) {
+                                cycleStructureType();
                             } else if (field.key().equals("category")) {
                                 cycleTaskCategory();
                             } else if (field.key().equals("difficulty")) {
@@ -450,18 +636,16 @@ public final class MilestoneConfigScreen extends Screen {
                 }
             }
         }
-        if (page == Page.TASK_EDIT)
-            addRenderableWidget(Button.builder(Component.literal("+ New category"),
-                b -> { if(collectFields())openCategoryAdd(Page.TASK_EDIT); })
-                .bounds(l+w-135,t+36,112,19).build()).active=canEdit();
+        // Task categories and difficulty are retired from the new editor.
+        // The legacy JSON fields stay intact until all existing Cores use groups.
     }
 
     private int contentTopOffset() {
         return page == Page.TASKS || page == Page.SCHEMATICS ? 94 : 69;
     }
     private int visibleRows() {
-        int rowHeight = (page == Page.CORE_EDIT || page == Page.TASK_EDIT) ? 24 : 25;
-        int top = (page == Page.CORE_EDIT || page == Page.TASK_EDIT) ? 65 : contentTopOffset();
+        int rowHeight = (isCorePage() || page == Page.TASK_EDIT) ? 24 : 25;
+        int top = (isCorePage() || page == Page.TASK_EDIT) ? 65 : contentTopOffset();
         return Math.max(1,(panelHeight() - top - 70)/rowHeight);
     }
 
@@ -482,7 +666,7 @@ public final class MilestoneConfigScreen extends Screen {
                 default -> null;
             };
         }
-        if (page == Page.CORE_EDIT) {
+        if (isCorePage()) {
             if (field.equals("task_ids"))return MilestoneIdPickerScreen.Kind.TASK;
             if (field.equals("reward_items"))return MilestoneIdPickerScreen.Kind.ITEM;
             if(field.equals("allowed_biomes") || field.equals("blocked_biomes"))
@@ -553,12 +737,18 @@ public final class MilestoneConfigScreen extends Screen {
 
     private String fieldValue(Field field) {
         if (pending.containsKey(field.key())) return pending.get(field.key());
-        JsonObject record = page == Page.CORE_EDIT ? core()
+        JsonObject record = isCorePage() ? core()
                 : page == Page.SCHEMATIC_EDIT ? schematic() : task();
         if (record == null) return "";
         String key = field.key().equals("target") ? targetKey(record) : field.key();
         JsonElement el = record.get(key);
-        if (el == null) return "";
+        if (el == null) return switch (key) {
+            case "unlock_category" -> record.has("profile")
+                    && record.get("profile").getAsString().equals("nether_gate")
+                    ? "dimension" : "recipes";
+            case "structure_type" -> "default";
+            default -> "";
+        };
         if (!el.isJsonArray()) return el.getAsString();
         StringBuilder value = new StringBuilder();
         for (JsonElement part : el.getAsJsonArray()) {
@@ -573,7 +763,7 @@ public final class MilestoneConfigScreen extends Screen {
     }
 
     private void toggle(String key) {
-        JsonObject record = page == Page.CORE_EDIT ? core() : task();
+        JsonObject record = isCorePage() ? core() : task();
         if (record == null) return;
         switch (key) {
             case "enabled" -> record.addProperty("enabled",
@@ -604,7 +794,7 @@ public final class MilestoneConfigScreen extends Screen {
 
     private boolean collectFields() {
         if (pending.isEmpty()) return true;
-        JsonObject record = page == Page.CORE_EDIT ? core()
+        JsonObject record = isCorePage() ? core()
                 : page == Page.SCHEMATIC_EDIT ? schematic() : task();
         if (record == null) return true;
         try {
@@ -740,8 +930,16 @@ public final class MilestoneConfigScreen extends Screen {
         refresh();
     }
 
+    private boolean isCorePage() {
+        return page == Page.CORE_EDIT || page == Page.CORE_SPAWN || page == Page.CORE_TASKS;
+    }
+
     private void navigate(Page dest) {
-        if ((page == Page.CORE_EDIT || page == Page.TASK_EDIT || page == Page.SCHEMATIC_EDIT)
+        if (!saveGrowthSpeed()) return;
+        if (page == Page.SCHEMATIC_IMPORT || page == Page.CORE_SCHEMATIC_PICK
+                || page == Page.CORE_FILE_PICK)
+            pickSchematicForCore = dest == Page.CORE_SCHEMATIC_PICK;
+        if ((isCorePage() || page == Page.TASK_EDIT || page == Page.SCHEMATIC_EDIT)
                 && !collectFields()) return;
         pending.clear(); confirmDelete = -1;
         page = dest; listScroll = 0; fieldScroll = 0;
@@ -750,6 +948,17 @@ public final class MilestoneConfigScreen extends Screen {
 
     private void addCore() {
         if (!canEdit() || cores().size() >= 32) return;
+        page = Page.CORE_CREATE;
+        refresh();
+    }
+
+    private void createNamedCore() {
+        if (coreNameBox == null || !canEdit()) return;
+        String name = coreNameBox.getValue().trim();
+        if (name.isEmpty() || name.length() > 80) {
+            status = "Core name must be 1-80 characters";
+            return;
+        }
         int next = 0;
         for (JsonObject candidate : sortedCores())
             next = Math.max(next, candidate.get("tier").getAsInt() + 1);
@@ -759,14 +968,23 @@ public final class MilestoneConfigScreen extends Screen {
         }
         JsonObject profile = cores().size() > 0 ? cores().get(0).getAsJsonObject().deepCopy() : new JsonObject();
         profile.addProperty("tier", next);
-        profile.addProperty("name", "New Milestone " + (next + 1));
+        // An explicitly empty array means new Cores start with NO stages.
+        // Absence of reward_stages remains the legacy fallback for old Cores.
+        profile.remove("minimum_contributors");
+        profile.add("reward_stages", new JsonArray());
+        profile.addProperty("name", name);
         profile.addProperty("enabled", true);
         profile.addProperty("profile", "generic");
-        profile.addProperty("task_mode", "preset");
-        profile.addProperty("difficulty", "easy");
-        profile.add("task_ids", new JsonArray());
+        profile.addProperty("unlock_category", "recipes");
+        profile.addProperty("structure_type", "default");
+        profile.addProperty("task_group", taskGroups().isEmpty() ? ""
+                : taskGroups().get(0).getAsJsonObject().get("id").getAsString());
+        // Obsolete settings are removed only from newly created Cores.
+        profile.remove("task_mode");
+        profile.remove("difficulty");
+        profile.remove("task_ids");
         profile.add("requires_completed_cores", new JsonArray());
-        profile.add("categories", new JsonArray());
+        profile.remove("categories");
         profile.add("allowed_biomes", new JsonArray());
         profile.add("blocked_biomes", new JsonArray());
         profile.add("reward_items", new JsonArray());
@@ -782,7 +1000,9 @@ public final class MilestoneConfigScreen extends Screen {
         profile.addProperty("color", "#FFFFFF");
         cores().add(profile);
         dirty = true;
-        status = "New Core added to draft";
+        status = taskGroups().isEmpty()
+                ? "Core named. Create a Task Group in Tasks before saving."
+                : "New Core added to draft";
         selectedTier = next;
         page = Page.CORE_EDIT;
         fieldScroll = 0;
@@ -791,6 +1011,77 @@ public final class MilestoneConfigScreen extends Screen {
 
     private boolean canImportLocal() {
         return minecraft!=null && (!connected() || minecraft.hasSingleplayerServer());
+    }
+
+    /** Browse already-installed .nbt files, without copying or renaming them. */
+    private List<java.nio.file.Path> configuredSchematicFiles() {
+        var folder = net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()
+                .resolve("milestone").resolve("schematics").toAbsolutePath().normalize();
+        if (!java.nio.file.Files.isDirectory(folder)) return List.of();
+        try (var files = java.nio.file.Files.list(folder)) {
+            return files.filter(path -> path.getFileName().toString().endsWith(".nbt")
+                    && java.nio.file.Files.isRegularFile(path)
+                    && !java.nio.file.Files.isSymbolicLink(path))
+                    .sorted().limit(128).toList();
+        } catch (Exception exception) {
+            return List.of();
+        }
+    }
+
+    private void selectConfiguredSchematic(java.nio.file.Path file) {
+        if (!canEdit() || !canImportLocal() || core() == null) return;
+        try {
+            var folder = net.neoforged.fml.loading.FMLPaths.CONFIGDIR.get()
+                    .resolve("milestone").resolve("schematics").toAbsolutePath().normalize();
+            file = file.toAbsolutePath().normalize();
+            String filename = file.getFileName().toString();
+            if (!file.getParent().equals(folder)
+                    || java.nio.file.Files.isSymbolicLink(file)
+                    || java.nio.file.Files.size(file) > 262144
+                    || !filename.matches("[a-zA-Z0-9_.-]{1,100}\\.nbt")
+                    || filename.startsWith(".") || filename.contains(".."))
+                throw new IllegalArgumentException("Invalid or oversized .nbt filename");
+            net.fireboy.milestone.milestone.ConfiguredSchematic.validateFile(filename);
+            for (JsonElement entry : schematics()) {
+                JsonObject known = entry.getAsJsonObject();
+                if (filename.equals(known.get("file").getAsString())) {
+                    chooseCoreSchematic(known.get("id").getAsString());
+                    return;
+                }
+            }
+            if (schematics().size() >= 64)
+                throw new IllegalArgumentException("Maximum 64 registered schematics");
+            String stem = filename.substring(0, filename.length() - 4);
+            String slug = stem.toLowerCase(java.util.Locale.ROOT)
+                    .replaceAll("[^a-z0-9_-]", "_");
+            if (slug.length() > 55) slug = slug.substring(0, 55);
+            String id = slug, suffix = "";
+            int number = 2;
+            while (schematicIds().contains(id)) {
+                suffix = "_" + number++;
+                id = slug + suffix;
+            }
+            JsonObject entry = new JsonObject();
+            entry.addProperty("id", id);
+            entry.addProperty("name", stem);
+            entry.addProperty("file", filename);
+            schematics().add(entry);
+            dirty = true;
+            chooseCoreSchematic(id);
+        } catch (Exception exception) {
+            status = "Cannot use schematic: " + exception.getMessage();
+        }
+    }
+
+    private void addPickerNavigation(int total, int visible) {
+        int l = left(), w = panelWidth(), t = bottom() - 49;
+        addRenderableWidget(Button.builder(Component.literal("Previous"),
+                b -> { listScroll = Math.max(0, listScroll - visible); refresh(); })
+                .bounds(l + 20, t, 88, 19).build()).active = listScroll > 0;
+        addRenderableWidget(Button.builder(Component.literal("Next"),
+                b -> { listScroll += visible; refresh(); })
+                .bounds(l + w - 108, t, 88, 19).build())
+                .active = listScroll + visible < total;
     }
 
     private List<java.nio.file.Path> importFiles() {
@@ -843,7 +1134,11 @@ public final class MilestoneConfigScreen extends Screen {
             selectedSchematic=schematics().size()-1;
             dirty=true;
             pending.clear();
-            page=Page.SCHEMATIC_EDIT;
+            if (pickSchematicForCore && core() != null) {
+                core().addProperty("schematic", id);
+                page = Page.CORE_EDIT;
+                pickSchematicForCore = false;
+            } else page=Page.SCHEMATIC_EDIT;
             fieldScroll=0;
             status="Imported structure; you can edit its name";
             refresh();
@@ -870,6 +1165,44 @@ public final class MilestoneConfigScreen extends Screen {
         fieldScroll=0;
         refresh();
     }
+    private void chooseCoreSchematic(String id) {
+        if (!canEdit() || core() == null) return;
+        core().addProperty("schematic", id);
+        dirty = true;
+        status = "Schematic selected (unsaved)";
+        page = Page.CORE_EDIT;
+        pickSchematicForCore = false;
+        refresh();
+    }
+
+    private void cycleUnlockCategory() {
+        if (!canEdit() || core() == null) return;
+        String current = core().has("unlock_category")
+                ? core().get("unlock_category").getAsString()
+                : core().has("profile") && core().get("profile").getAsString().equals("nether_gate")
+                    ? "dimension" : "recipes";
+        String next = switch (current) {
+            case "recipes" -> "dimension";
+            case "dimension" -> "allowance";
+            default -> "recipes";
+        };
+        core().addProperty("unlock_category", next);
+        dirty = true;
+        status = "Category selected (future unlock classification)";
+        refresh();
+    }
+
+    private void cycleStructureType() {
+        if (!canEdit() || core() == null) return;
+        String current = core().has("structure_type")
+                ? core().get("structure_type").getAsString() : "default";
+        core().addProperty("structure_type",
+                current.equals("default") ? "planned" : "default");
+        dirty = true;
+        status = "Structure selection is a placeholder; spawning is unchanged";
+        refresh();
+    }
+
     private void cycleSchematic() {
         if (!canEdit() || core()==null) return;
         List<String> ids=schematicIds();
@@ -900,8 +1233,6 @@ public final class MilestoneConfigScreen extends Screen {
         entry.addProperty("type", "kill");
         entry.addProperty("entity", "minecraft:zombie");
         entry.addProperty("count", 1);
-        entry.addProperty("category", "combat");
-        entry.addProperty("difficulty", "easy");
         entry.addProperty("clue", "Defeat a zombie");
         tasks().add(entry);
         dirty = true;
@@ -938,16 +1269,33 @@ public final class MilestoneConfigScreen extends Screen {
             schematics().remove(id);
             status = "Schematic entry removed (the .nbt file is not deleted)";
         } else if (id >= 0 && id < tasks().size()) {
+            String taskId = tasks().get(id).getAsJsonObject().get("id").getAsString();
+            for (JsonElement entry : taskGroups()) {
+                JsonObject group = entry.getAsJsonObject();
+                for (JsonElement chosen : group.getAsJsonArray("task_ids"))
+                    if (taskId.equals(chosen.getAsString())) {
+                        status = "Task belongs to group: " + group.get("name").getAsString();
+                        confirmDelete = -1;
+                        refresh();
+                        return;
+                    }
+            }
             tasks().remove(id);
-            status = "Task removed from draft. Check manual task lists before saving.";
+            status = "Custom task removed from draft.";
         }
         dirty = true;
         confirmDelete = -1;
         refresh();
     }
 
+    private void setGrowthPreset(int ticks) {
+        if (!canEdit() || growthSpeedBox == null) return;
+        growthSpeedBox.setValue(Integer.toString(ticks));
+        if (saveGrowthSpeed()) refresh();
+    }
+
     private void saveChanges() {
-        if (!canEdit() || waitingForServer || saving || !collectFields()) return;
+        if (!canEdit() || waitingForServer || saving || !saveGrowthSpeed() || !collectFields()) return;
         String json = draft.toString();
         if (json.length() > 64000) { status = "Configuration exceeds 64 KiB"; return; }
         if (connected()) {
@@ -1012,7 +1360,7 @@ public final class MilestoneConfigScreen extends Screen {
     private boolean scrollablePage() {
         return page == Page.CORES || page == Page.TASKS || page == Page.SCHEMATICS
                 || page == Page.SCHEMATIC_IMPORT
-                || page == Page.CORE_EDIT || page == Page.TASK_EDIT
+                || isCorePage() || page == Page.TASK_EDIT
                 || page == Page.SCHEMATIC_EDIT
                 || page == Page.CATEGORY_PICK;
     }
@@ -1025,6 +1373,8 @@ public final class MilestoneConfigScreen extends Screen {
             case SCHEMATIC_IMPORT -> importFiles().size();
             case SCHEMATIC_EDIT -> SCHEMATIC_FIELDS.length;
             case CORE_EDIT -> CORE_FIELDS.length;
+            case CORE_SPAWN -> CORE_SPAWN_FIELDS.length;
+            case CORE_TASKS -> CORE_TASK_FIELDS.length;
             case TASK_EDIT -> TASK_FIELDS.length;
             case CATEGORY_PICK -> categories().size();
             default -> 0;
@@ -1032,20 +1382,20 @@ public final class MilestoneConfigScreen extends Screen {
     }
 
     private int scrollbarVisible() {
-        return (page == Page.CORE_EDIT || page == Page.TASK_EDIT
+        return (isCorePage() || page == Page.TASK_EDIT
                 || page == Page.SCHEMATIC_EDIT)
                 ? visibleRows() : (page == Page.CATEGORY_PICK ? rowsFit(25) : visibleRows());
     }
 
     private int scrollbarOffset() {
-        return (page == Page.CORE_EDIT || page == Page.TASK_EDIT
+        return (isCorePage() || page == Page.TASK_EDIT
                 || page == Page.SCHEMATIC_EDIT) ? fieldScroll : listScroll;
     }
 
     private void setScrollbarOffset(double newOffset) {
         smoothRows.drag(newOffset,Math.max(0,scrollbarCount()-scrollbarVisible()));
         int row=smoothRows.first();
-        if (page == Page.CORE_EDIT || page == Page.TASK_EDIT
+        if (isCorePage() || page == Page.TASK_EDIT
                 || page == Page.SCHEMATIC_EDIT) {
             if(row!=fieldScroll){fieldScroll=row;refresh();}
         } else if(row!=listScroll){listScroll=row;refresh();}
@@ -1053,11 +1403,11 @@ public final class MilestoneConfigScreen extends Screen {
 
     private int scrollbarX() { return left()+panelWidth()-17; }
     private int scrollbarY() {
-        return top() + ((page == Page.CORE_EDIT || page == Page.TASK_EDIT
+        return top() + ((isCorePage() || page == Page.TASK_EDIT
                 || page == Page.SCHEMATIC_EDIT) ? 65 : contentTopOffset());
     }
     private int scrollbarHeight() {
-        return scrollbarVisible() * ((page == Page.CORE_EDIT || page == Page.TASK_EDIT
+        return scrollbarVisible() * ((isCorePage() || page == Page.TASK_EDIT
                 || page == Page.SCHEMATIC_EDIT) ? 24 : 25);
     }
     private int scrollbarThumb() {
@@ -1163,7 +1513,13 @@ public final class MilestoneConfigScreen extends Screen {
         } else {
             String title = switch (page) {
                 case CORES -> "Cores (" + cores().size() + ")";
+                case CORE_CREATE -> "Create New Core";
+                case CORE_GROUP_PICK -> "Select a Task Group";
+                case CORE_SCHEMATIC_PICK -> "Select a Schematic";
+                case CORE_FILE_PICK -> "Select a .nbt File";
                 case CORE_EDIT -> "Edit Core " + (selectedTier + 1);
+                case CORE_SPAWN -> "Core " + (selectedTier + 1) + " - Spawn Rules";
+                case CORE_TASKS -> "Core " + (selectedTier + 1) + " - Tasks";
                 case TASKS -> "Tasks (" + tasks().size() + ")";
                 case TASK_EDIT -> "Edit Task";
                 case SCHEMATICS -> "Schematics (" + schematics().size() + ")";
@@ -1172,13 +1528,16 @@ public final class MilestoneConfigScreen extends Screen {
                 case CATEGORY_PICK -> "Core categories";
                 case CATEGORY_ADD -> "Create category";
                 case SHOP -> "Shop";
+                case GROWTH -> "Resonant Growth Speed";
                 default -> "";
             };
             graphics.drawCenteredString(font, title, width / 2, t + 18, TEXT);
         }
-        if (page == Page.CORE_EDIT || page == Page.TASK_EDIT
+        if (isCorePage() || page == Page.TASK_EDIT
                 || page == Page.SCHEMATIC_EDIT) {
             Field[] fields = page == Page.CORE_EDIT ? CORE_FIELDS
+                : page == Page.CORE_SPAWN ? CORE_SPAWN_FIELDS
+                : page == Page.CORE_TASKS ? CORE_TASK_FIELDS
                 : page == Page.SCHEMATIC_EDIT ? SCHEMATIC_FIELDS : TASK_FIELDS;
             int labelW = Math.max(82, Math.min(147, (w - 32) * 45 / 100));
             graphics.enableScissor(l+11,scrollbarY(),l+w-13,
@@ -1187,14 +1546,19 @@ public final class MilestoneConfigScreen extends Screen {
                 Field field = fields[i];
                 if (isToggle(field.key()) || field.key().equals("category")
                         || field.key().equals("difficulty") || field.key().equals("categories")
-                        || field.key().equals("schematic")) continue;
+                        || field.key().equals("schematic") || field.key().equals("task_group")
+                        || field.key().equals("unlock_category")
+                        || field.key().equals("structure_type")) continue;
                 graphics.drawString(font, font.plainSubstrByWidth(field.label(), labelW - 4),
                         l + 16, t + 72 + (i - fieldScroll)*24 - smoothRows.pixels(), MUTED);
             }
             graphics.disableScissor();
-            graphics.drawCenteredString(font,
-                    "Scroll for more settings. Changes apply when you press Save.",
-                    width / 2, bottom() - 71, MUTED);
+            if (page == Page.CORE_SPAWN)
+                graphics.drawCenteredString(font, "Generation rules for newly placed cores only.",
+                        width / 2, bottom() - 78, MUTED);
+            else if (page == Page.CORE_TASKS)
+                graphics.drawCenteredString(font, "Choose a task group and any prerequisite cores.",
+                        width / 2, bottom() - 78, MUTED);
         }
         if (page == Page.SCHEMATIC_IMPORT) {
             graphics.drawCenteredString(font,"Select an .nbt in Create's schematic folder.",
@@ -1207,15 +1571,35 @@ public final class MilestoneConfigScreen extends Screen {
                     width/2,bottom()-81,MUTED);
         }
         if (page == Page.TASKS) {
-            String label = categoryFilter == 0 ? "All categories"
-                    : categories().get(Math.floorMod(categoryFilter-1,categories().size()));
             graphics.drawCenteredString(font,
-                label + " - " + filteredTasks().size() + " tasks",width/2,t+32,MUTED);
-            if(filteredTasks().isEmpty())
-                graphics.drawCenteredString(font,"No tasks match these filters.",width/2,t+133,MUTED);
+                    filteredTasks().size() + " custom tasks | "
+                            + taskGroups().size() + " reusable groups", width / 2, t + 32, MUTED);
         }
+        if (page == Page.CORE_CREATE)
+            graphics.drawCenteredString(font, "Name your Milestone before configuring it.",
+                    width / 2, t + 73, MUTED);
+        if (page == Page.CORE_SCHEMATIC_PICK)
+            graphics.drawCenteredString(font,
+                    "Pick a registered schematic or browse .nbt files.",
+                    width / 2, bottom() - 112, MUTED);
+        if (page == Page.CORE_FILE_PICK)
+            graphics.drawCenteredString(font,
+                    "Files in config/milestone/schematics/ (local world only)",
+                    width / 2, bottom() - 74, MUTED);
+        // The Core main screen has no secondary footer text: its last action
+        // button sits above the single shared status strip.
         if (page == Page.CATEGORY_ADD) {
             graphics.drawCenteredString(font,"Enter a name for the new category.",width/2,t+64,MUTED);
+        }
+        if (page == Page.GROWTH) {
+            graphics.drawCenteredString(font, "Ticks between growth updates (1 - 1200)",
+                    width / 2, t + 68, MUTED);
+            graphics.drawCenteredString(font, "20 ticks = 1 second at 20 TPS.",
+                    width / 2, t + 119, MUTED);
+            graphics.drawCenteredString(font, "Lower = faster growth. Applies server-wide.",
+                    width / 2, t + 131, MUTED);
+            graphics.drawCenteredString(font, "New cores also use this speed for world-age growth.",
+                    width / 2, t + 215, MUTED);
         }
         if (page == Page.SHOP) {
             graphics.drawCenteredString(font, "Shop settings are coming later.",
@@ -1225,13 +1609,13 @@ public final class MilestoneConfigScreen extends Screen {
         }
         if (!canEdit()) {
             graphics.drawCenteredString(font, "Server operator access required to edit.",
-                    width / 2, bottom() - 68, 0xFFFFCC88);
+                    width / 2, bottom() - 54, 0xFFFFCC88);
         } else if (waitingForServer) {
             graphics.drawCenteredString(font, "Loading server settings...",
-                    width / 2, bottom() - 68, MUTED);
+                    width / 2, bottom() - 54, MUTED);
         } else if (!status.isBlank()) {
             graphics.drawCenteredString(font, font.plainSubstrByWidth(status, w - 24),
-                    width / 2, bottom() - 68, dirty ? 0xFFFFD27C : TEXT);
+                    width / 2, bottom() - 54, dirty ? 0xFFFFD27C : TEXT);
         }
         renderScrollbar(graphics);
     }

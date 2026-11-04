@@ -56,6 +56,19 @@ public final class MilestoneGameplayManager {
                 .withStyle(ChatFormatting.AQUA));
     }
 
+    /**
+     * Operator testing helper: discover a registered Core anywhere in the world,
+     * without loading its chunk, teleporting, accepting tasks or contributing.
+     * Uses the exact same persisted discovery path as clicking the Core.
+     */
+    public static boolean debugDiscover(ServerLevel owningLevel, MilestoneRecord record,
+                                        ServerPlayer operator) {
+        if (!MilestoneContentConfig.enabled()) return false;
+        if (record.discoveredBy() != null || !isPreDiscovery(record.state())) return false;
+        discoverIfNeeded(owningLevel, record, operator);
+        return true;
+    }
+
     /** Open the central board; it can read unloaded Cores from persistent SavedData. */
     public static void openMissionStation(ServerLevel level, BlockPos stationPos, ServerPlayer player) {
         java.util.List<MilestoneRecord> records = new ArrayList<>(MilestoneManager.data(level.getServer()).all());
@@ -129,7 +142,7 @@ public final class MilestoneGameplayManager {
         record = ensureAssignment(level, record, player);
         TaskAssignment assignment = record.assignment(player.getUUID()).orElse(null);
         if (assignment == null) return;
-        if (assignment.completed()) {
+        if (assignment.completed() || record.contributors().contains(player.getUUID())) {
             player.sendSystemMessage(Component.literal("You've already contributed to this Milestone.")
                     .withStyle(ChatFormatting.GREEN));
             return;
@@ -137,7 +150,7 @@ public final class MilestoneGameplayManager {
 
         MilestoneTaskDefinition genericDefinition = MilestoneTaskCatalog.get(record, assignment.taskId());
         if (!(genericDefinition instanceof ItemSubmissionTaskDefinition definition)) {
-            player.sendSystemMessage(Component.literal("This objective completes automatically, not by offering an item.")
+            player.sendSystemMessage(Component.literal("Use Submit Contribution for a completed hunt or advancement.")
                     .withStyle(ChatFormatting.YELLOW));
             return;
         }
@@ -152,6 +165,44 @@ public final class MilestoneGameplayManager {
                         .withStyle(ChatFormatting.GREEN));
     }
 
+    /** Station-only acceptance of a completed hunt or advancement. */
+    public static void submitReadyFromStation(ServerLevel stationLevel, UUID milestoneId, ServerPlayer player) {
+        if (!MilestoneContentConfig.enabled()) return;
+        MilestoneRecord record = MilestoneManager.get(stationLevel.getServer(), milestoneId).orElse(null);
+        if (record == null || record.discoveredBy() == null) return;
+        if (!MilestoneContentConfig.prerequisitesMet(stationLevel.getServer(), record)
+                || !StationConstructionManager.isVerified(stationLevel.getServer(), record)) {
+            player.sendSystemMessage(Component.literal("This Milestone is not ready for contributions.")
+                    .withStyle(ChatFormatting.YELLOW));
+            return;
+        }
+        ServerLevel owning = MilestoneManager.levelFor(stationLevel.getServer(), record);
+        if (owning == null) return;
+        record = ensureAssignment(owning, record, player);
+        TaskAssignment assignment = record.assignment(player.getUUID()).orElse(null);
+        if (record.contributors().contains(player.getUUID())
+                || (assignment != null && assignment.completed())) {
+            player.sendSystemMessage(Component.literal("You have already contributed to this Milestone.")
+                    .withStyle(ChatFormatting.YELLOW));
+            return;
+        }
+        if (assignment == null || !assignment.readyToSubmit()) {
+            player.sendSystemMessage(Component.literal("Complete your objective before submitting it.")
+                    .withStyle(ChatFormatting.YELLOW));
+            return;
+        }
+        MilestoneTaskDefinition definition = MilestoneTaskCatalog.get(record, assignment.taskId());
+        if (!(definition instanceof KillTaskDefinition)
+                && !(definition instanceof AdvancementTaskDefinition)) {
+            player.sendSystemMessage(Component.literal("Item objectives require an offering in the Station.")
+                    .withStyle(ChatFormatting.YELLOW));
+            return;
+        }
+        completeContribution(owning, record, player,
+                Component.literal("The Mission Station accepts your completed objective.")
+                        .withStyle(ChatFormatting.GREEN));
+    }
+
     public static MilestoneRecord ensureAssignment(ServerLevel level, MilestoneRecord record, ServerPlayer player) {
         if (!MilestoneContentConfig.enabled()) return record;
         if (record.discoveredBy() == null
@@ -159,7 +210,8 @@ public final class MilestoneGameplayManager {
                 || !StationConstructionManager.isVerified(level.getServer(), record)) {
             return record;
         }
-        if (record.assignment(player.getUUID()).isPresent()) {
+        if (record.assignment(player.getUUID()).isPresent()
+                || record.contributors().contains(player.getUUID())) {
             return record;
         }
 
@@ -211,6 +263,7 @@ public final class MilestoneGameplayManager {
             String clue = definition == null ? "Unknown task" : definition.clue();
             if (definition instanceof KillTaskDefinition hunt)
                 clue += " (" + assignment.progress() + "/" + hunt.count() + ")";
+            if (assignment.readyToSubmit()) clue += " [READY TO SUBMIT]";
             player.sendSystemMessage(Component.literal("Your task: " + clue)
                     .withStyle(ChatFormatting.AQUA));
             if (definition != null) {
@@ -218,17 +271,18 @@ public final class MilestoneGameplayManager {
                         .withStyle(ChatFormatting.GRAY));
             }
             player.sendSystemMessage(Component.literal(
-                    "Your status: " + (assignment.completed() ? "COMPLETE" : "INCOMPLETE")
+                    "Your status: " + (assignment.completed() ? "ACCEPTED"
+                            : assignment.readyToSubmit() ? "READY TO SUBMIT" : "IN PROGRESS")
             ).withStyle(assignment.completed() ? ChatFormatting.GREEN : ChatFormatting.YELLOW));
         }
 
         int contributors = record.contributorCount();
-        int required = record.type().minimumContributors();
+        int required = MilestoneContentConfig.finalThreshold(record);
         player.sendSystemMessage(Component.literal(
-                "Contributors: " + contributors + "/" + required + " required"
+                "Contributors: " + contributors + "/" + required + " until completion"
         ).withStyle(ChatFormatting.GOLD));
 
-        MilestoneType.RewardThreshold next = record.type().nextThresholdAfter(contributors);
+        MilestoneContentConfig.RewardStage next = MilestoneContentConfig.nextRewardStage(record);
         if (next != null) {
             player.sendSystemMessage(Component.literal(
                     "Next unlock: " + next.contributors() + " contributors — " + next.description()
@@ -328,7 +382,8 @@ public final class MilestoneGameplayManager {
         if (server == null) return;
         for (MilestoneRecord record : new ArrayList<>(MilestoneManager.data(server).all())) {
             TaskAssignment assignment = record.assignment(player.getUUID()).orElse(null);
-            if (assignment == null || assignment.completed()
+            if (assignment == null || assignment.completed() || assignment.readyToSubmit()
+                    || record.contributors().contains(player.getUUID())
                     || !StationConstructionManager.isVerified(server, record)
                     || !MilestoneContentConfig.prerequisitesMet(server, record)) continue;
             MilestoneTaskDefinition task = MilestoneTaskCatalog.get(record, assignment.taskId());
@@ -337,9 +392,11 @@ public final class MilestoneGameplayManager {
             if (owning == null) continue;
             int progress = Math.min(hunt.count(), assignment.progress() + 1);
             if (progress >= hunt.count()) {
-                completeContribution(owning, record.updateAssignment(assignment.withProgress(progress)),
-                        player, Component.literal("Hunt complete: " + progress + "/" + hunt.count())
-                                .withStyle(ChatFormatting.GREEN));
+                MilestoneManager.save(owning, record.updateAssignment(
+                        assignment.withProgress(progress).markReady()));
+                player.sendSystemMessage(Component.literal(
+                        "Hunt complete! Return to the Mission Station to submit your contribution.")
+                        .withStyle(ChatFormatting.GREEN));
             } else {
                 MilestoneManager.save(owning, record.updateAssignment(assignment.withProgress(progress)));
                 player.sendSystemMessage(Component.literal(
@@ -373,7 +430,8 @@ public final class MilestoneGameplayManager {
         // Snapshot because completing a task replaces records in SavedData.
         for (MilestoneRecord record : new ArrayList<>(MilestoneManager.data(server).all())) {
             TaskAssignment assignment = record.assignment(player.getUUID()).orElse(null);
-            if (assignment == null || assignment.completed()
+            if (assignment == null || assignment.completed() || assignment.readyToSubmit()
+                    || record.contributors().contains(player.getUUID())
                     || !StationConstructionManager.isVerified(server, record)
                     || !MilestoneContentConfig.prerequisitesMet(server, record)) {
                 continue;
@@ -389,7 +447,10 @@ public final class MilestoneGameplayManager {
                 continue;
             }
 
-            completeContribution(owningLevel, record, player, successMessage);
+            MilestoneManager.save(owningLevel, record.updateAssignment(assignment.markReady()));
+            player.sendSystemMessage(Component.literal(
+                    "Objective completed! Return to the Mission Station to submit your contribution.")
+                    .withStyle(ChatFormatting.GREEN));
         }
     }
 
@@ -399,6 +460,7 @@ public final class MilestoneGameplayManager {
             ServerPlayer player,
             Component successMessage
     ) {
+        if (record.contributors().contains(player.getUUID())) return record;
         int before = record.contributorCount();
         record = record.completeTask(player.getUUID(), level.getGameTime());
         MilestoneManager.save(level, record);
@@ -408,10 +470,13 @@ public final class MilestoneGameplayManager {
         if (after > before) rewardContribution(level.getServer(), record, player);
         broadcast(level.getServer(), Component.literal(
                 player.getScoreboardName() + " contributed to " + record.type().displayName() +
-                        " (" + after + "/" + record.type().minimumContributors() + ")."
+                        " (" + after + "/" + MilestoneContentConfig.finalThreshold(record) + ")."
         ).withStyle(ChatFormatting.GOLD));
 
         record = applyThresholds(level, record, before, after);
+        // Feature gates may open at any configured contribution stage, not only
+        // when the entire Core is marked completed.
+        if (after > before) MilestoneFeatureLocks.applyRecipes(level.getServer(), false, true);
         showStatus(player, record);
         return record;
     }
@@ -421,10 +486,10 @@ public final class MilestoneGameplayManager {
             return "Submission: bring the requested offering to the Mission Station.";
         }
         if (definition instanceof KillTaskDefinition hunt) {
-            return "Hunt: personally defeat " + hunt.count() + " target(s).";
+            return "Hunt: defeat " + hunt.count() + " target(s), then submit at the Station.";
         }
         if (definition instanceof AdvancementTaskDefinition) {
-            return "Completion: automatic when you earn the requested advancement.";
+            return "Earn the advancement, then submit at the Station.";
         }
         return "Completion method unknown.";
     }
@@ -468,10 +533,13 @@ public final class MilestoneGameplayManager {
             int before,
             int after
     ) {
-        for (MilestoneType.RewardThreshold threshold : record.type().thresholds()) {
+        java.util.List<MilestoneContentConfig.RewardStage> reached = new java.util.ArrayList<>();
+        for (MilestoneContentConfig.RewardStage threshold : MilestoneContentConfig.rewardStages(record)) {
             if (before < threshold.contributors() && after >= threshold.contributors()) {
                 boolean newlyUnlocked = threshold.unlock() == null
                         || MilestoneProgressionManager.unlock(level.getServer(), threshold.unlock());
+
+                reached.add(threshold);
 
                 // Site-local prototype thresholds can always announce. Global progression
                 // rewards announce only the first time the server earns that unlock.
@@ -484,18 +552,21 @@ public final class MilestoneGameplayManager {
             }
         }
 
-        if (before < record.type().minimumContributors()
-                && after >= record.type().minimumContributors()
+        if (before == 0 && after > 0 && after < MilestoneContentConfig.finalThreshold(record)
                 && record.state() != MilestoneState.COMPLETED) {
             record = MilestoneManager.setState(level, record, MilestoneState.ACTIVE);
         }
 
-        if (after >= record.type().finalThreshold()
+        if (after >= MilestoneContentConfig.finalThreshold(record)
                 && record.state() != MilestoneState.COMPLETED) {
             record = MilestoneManager.setState(level, record, MilestoneState.COMPLETED);
             completeCoreRewards(level.getServer(), record);
             MilestoneFeatureLocks.applyRecipes(level.getServer(),false,true);
         }
+        // Advancement grants can trigger task events, so deliver them only
+        // after state transitions have been persisted, never mid-transition.
+        for (MilestoneContentConfig.RewardStage stage : reached)
+            MilestoneStageRewards.award(level.getServer(), record, stage);
         return record;
     }
 
@@ -539,9 +610,9 @@ public final class MilestoneGameplayManager {
         MilestoneState desired;
         if (record.discoveredBy() == null) {
             desired = MilestoneState.DORMANT;
-        } else if (count >= record.type().finalThreshold()) {
+        } else if (count >= MilestoneContentConfig.finalThreshold(record)) {
             desired = MilestoneState.COMPLETED;
-        } else if (count >= record.type().minimumContributors()) {
+        } else if (count > 0) {
             desired = MilestoneState.ACTIVE;
         } else {
             desired = MilestoneState.DISCOVERED;

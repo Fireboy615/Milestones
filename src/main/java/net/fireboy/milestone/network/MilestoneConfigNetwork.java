@@ -3,6 +3,7 @@ package net.fireboy.milestone.network;
 import net.fireboy.milestone.Milestone;
 import net.fireboy.milestone.server.config.MilestoneContentConfig;
 import net.fireboy.milestone.unlock.MilestoneFeatureLocks;
+import net.fireboy.milestone.worldgen.WorldSiteManager;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -26,11 +27,15 @@ public final class MilestoneConfigNetwork {
         var registrar = event.registrar("1");
         registrar.playToServer(ConfigRequest.TYPE, ConfigRequest.CODEC, MilestoneConfigNetwork::request);
         registrar.playToServer(ConfigEdit.TYPE, ConfigEdit.CODEC, MilestoneConfigNetwork::edit);
-        registrar.playToClient(ConfigSnapshot.TYPE, ConfigSnapshot.CODEC, MilestoneConfigNetwork::snapshot);
+        registrar.playToClient(ConfigSnapshot.TYPE, ConfigSnapshot.CODEC, MilestoneClientboundBridge::handle);
         registrar.playToServer(ConfigSave.TYPE, ConfigSave.CODEC, MilestoneConfigNetwork::save);
-        registrar.playToClient(ConfigResult.TYPE, ConfigResult.CODEC, MilestoneConfigNetwork::result);
+        registrar.playToClient(ConfigResult.TYPE, ConfigResult.CODEC, MilestoneClientboundBridge::handle);
         registrar.playToServer(IdSearchRequest.TYPE, IdSearchRequest.CODEC, MilestoneConfigNetwork::idSearch);
-        registrar.playToClient(IdSearchResults.TYPE, IdSearchResults.CODEC, MilestoneConfigNetwork::idSearchResults);
+        registrar.playToClient(IdSearchResults.TYPE, IdSearchResults.CODEC, MilestoneClientboundBridge::handle);
+        registrar.playToServer(GenerationRequest.TYPE, GenerationRequest.CODEC,
+                MilestoneConfigNetwork::generate);
+        registrar.playToClient(GenerationStatus.TYPE, GenerationStatus.CODEC,
+                MilestoneClientboundBridge::handle);
     }
 
     private static void request(ConfigRequest payload, IPayloadContext context) {
@@ -50,16 +55,7 @@ public final class MilestoneConfigNetwork {
                 new ConfigSnapshot(MilestoneContentConfig.server().payload()));
     }
 
-    private static void snapshot(ConfigSnapshot payload, IPayloadContext context) {
-        if (context.player().level().isClientSide()) {
-            MilestoneContentConfig.installClient(payload.json());
-            // If the Mods menu opened the editor, update the initial field from
-            // the server's authoritative config rather than stale client defaults.
-            var screen = net.minecraft.client.Minecraft.getInstance().screen;
-            if (screen instanceof net.fireboy.milestone.client.screen.MilestoneConfigScreen config)
-                config.refreshFromServer(payload.json());
-        }
-    }
+
 
     private static void save(ConfigSave payload, IPayloadContext context) {
         if (!(context.player() instanceof ServerPlayer player) || !player.hasPermissions(2)) return;
@@ -70,42 +66,129 @@ public final class MilestoneConfigNetwork {
                 new ConfigSnapshot(MilestoneContentConfig.server().payload()));
     }
 
-    private static void result(ConfigResult payload, IPayloadContext context) {
-        if (!context.player().level().isClientSide()) return;
-        var screen = net.minecraft.client.Minecraft.getInstance().screen;
-        if (screen instanceof net.fireboy.milestone.client.screen.MilestoneConfigScreen config)
-            config.onSaveResult(payload.success(), payload.message());
-    }
 
-    /** Search the SERVER recipe catalog, including recipes hidden by Milestone locks.
-     * Only operators may search. Results are bounded and paginated. */
+
+    /** Operator-only, bounded remote lookup with shared token filters and
+     * human-readable labels. Recipes stay searchable while locked. */
     private static void idSearch(IdSearchRequest request, IPayloadContext context) {
         if (!(context.player() instanceof ServerPlayer player) || !player.hasPermissions(2)) return;
         if (request.query().length() > 90) return;
-        int offset=Math.max(0,request.offset());
+        int offset=Math.min(100000,Math.max(0,request.offset()));
         int limit=Math.min(30,Math.max(1,request.limit()));
-        String query=request.query().toLowerCase(Locale.ROOT);
-        List<String> matches=new ArrayList<>();
-        // This is an on-demand administrative search; no recipe data is sent
-        // to ordinary clients who haven't earned it.
-        if(request.kind().equals("recipe")) {
-            for(var id:MilestoneFeatureLocks.allRecipeIds(player.getServer()))
-                if(id.toString().contains(query))matches.add(id.toString());
-        } else if(request.kind().equals("advancement")) {
-            for(var adv:player.getServer().getAdvancements().getAllAdvancements())
-                if(adv.id().toString().contains(query))matches.add(adv.id().toString());
+        String search=request.query().toLowerCase(Locale.ROOT);
+        var parsed=MilestonePickerSearch.parse(search);
+        String[] args=request.kind().split("/",2);
+        if (args.length!=2) return;
+        MilestonePickerSearch.Field field;
+        try {field=MilestonePickerSearch.Field.valueOf(args[1].toUpperCase(Locale.ROOT));}
+        catch(IllegalArgumentException exception){return;}
+        record Match(String id,String name,String icon) {}
+        List<Match> matches=new ArrayList<>();
+        java.util.Map<String,net.minecraft.world.item.crafting.RecipeHolder<?>> recipeResults =
+                new java.util.HashMap<>();
+        if(args[0].equals("recipe")) {
+            // Never remove recipes from the catalog: a locked recipe must remain browsable.
+            for(var recipe:player.getServer().getRecipeManager().getRecipes()) {
+                String id=recipe.id().toString(),name=prettyId(id);
+                if(parsed.matches(id,name,field)) {
+                    matches.add(new Match(id,name,""));
+                    recipeResults.put(id,recipe);
+                }
+            }
+        } else if(args[0].equals("recipe_mod")) {
+            // A single modid:* selector applies to all current and future recipes.
+            // Keep only the count and an example output icon, not 2,000+ IDs.
+            java.util.Map<String,Integer> counts=new java.util.HashMap<>();
+            java.util.Map<String,String> icons=new java.util.HashMap<>();
+            for(var recipe:player.getServer().getRecipeManager().getRecipes()) {
+                String namespace=recipe.id().getNamespace();
+                counts.merge(namespace,1,Integer::sum);
+                if(!icons.containsKey(namespace)) {
+                    String icon=recipeIcon(recipe,player.getServer());
+                    if(!icon.isBlank()) icons.put(namespace,icon);
+                }
+            }
+            for(var entry:counts.entrySet()) {
+                String namespace=entry.getKey();
+                String modName=net.neoforged.fml.ModList.get().getModContainerById(namespace)
+                        .map(container->container.getModInfo().getDisplayName())
+                        .orElse(prettyId(namespace));
+                String label=modName+" ("+entry.getValue()+" recipes)";
+                String rule=namespace+":*";
+                if(parsed.matches(rule,label,field))
+                    matches.add(new Match(rule,label,icons.getOrDefault(namespace,"")));
+            }
+        } else if(args[0].equals("dimension")) {
+            // Query the actual server level registry. This picks up installed
+            // modded dimensions without maintaining a hardcoded list.
+            for (var dimension : player.getServer().levelKeys()) {
+                var location = dimension.location();
+                String namespace = location.getNamespace();
+                String mod = net.neoforged.fml.ModList.get()
+                        .getModContainerById(namespace)
+                        .map(container -> container.getModInfo().getDisplayName())
+                        .orElse(prettyId(namespace));
+                String name = prettyId(location.getPath()) + " (" + mod + ")";
+                String icon = location.toString().equals("minecraft:the_nether")
+                        ? "minecraft:obsidian"
+                        : location.toString().equals("minecraft:the_end")
+                            ? "minecraft:end_stone" : "minecraft:grass_block";
+                if (parsed.matches(location.toString(), name, field))
+                    matches.add(new Match(location.toString(), name, icon));
+            }
+        } else if(args[0].equals("advancement")) {
+            for(var adv:player.getServer().getAdvancements().getAllAdvancements()) {
+                String id=adv.id().toString();
+                String name=adv.value().display()
+                        .map(display->display.getTitle().getString())
+                        .orElse(prettyId(id));
+                if(parsed.matches(id,name,field))
+                    matches.add(new Match(id,name,""));
+            }
         } else return;
-        matches.sort(String::compareTo);
+        matches.sort(java.util.Comparator.comparingInt(
+                (Match m)->parsed.rank(m.id(),m.name()))
+                .thenComparing(Match::name).thenComparing(Match::id));
         int end=Math.min(matches.size(),offset+limit);
-        List<String> page=offset>=matches.size()?List.of():matches.subList(offset,end);
-        PacketDistributor.sendToPlayer(player,new IdSearchResults(query,offset,matches.size(),page));
+        List<String> ids=new ArrayList<>(),names=new ArrayList<>(),icons=new ArrayList<>();
+        for(int i=offset;i<end;i++) {
+            Match match=matches.get(i);
+            ids.add(match.id());
+            names.add(match.name().length()>120?match.name().substring(0,120):match.name());
+            var recipe=recipeResults.get(match.id());
+            icons.add(recipe==null ? match.icon() : recipeIcon(recipe,player.getServer()));
+        }
+        PacketDistributor.sendToPlayer(player,new IdSearchResults(
+                search,request.kind(),offset,matches.size(),ids,names,icons));
     }
 
-    private static void idSearchResults(IdSearchResults result, IPayloadContext context) {
-        var current=net.minecraft.client.Minecraft.getInstance().screen;
-        if(current instanceof net.fireboy.milestone.client.screen.MilestoneIdPickerScreen picker)
-            picker.receiveServerResults(result.query(),result.offset(),result.total(),result.ids());
+    /** Best-effort visual for a recipe's result; never modifies its data. */
+    private static String recipeIcon(net.minecraft.world.item.crafting.RecipeHolder<?> holder,
+                                     net.minecraft.server.MinecraftServer server) {
+        try {
+            var stack=holder.value().getResultItem(server.registryAccess());
+            if(stack.isEmpty()) return "";
+            return net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+        } catch (RuntimeException | LinkageError error) {
+            // Some modded processing recipes do not have a static item result.
+            return "";
+        }
     }
+
+    private static String prettyId(String id) {
+        String path=id.contains(":")?id.substring(id.indexOf(':')+1):id;
+        path=path.replace('_',' ').replace('/',' ');
+        if(path.isEmpty()) return id;
+        StringBuilder name=new StringBuilder();
+        for(String part:path.split(" ")) {
+            if(part.isEmpty())continue;
+            if(!name.isEmpty())name.append(' ');
+            name.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
+        }
+        return name.toString();
+    }
+
+
 
     public record IdSearchRequest(String query,int offset,int limit,String kind) implements CustomPacketPayload {
         public static final Type<IdSearchRequest> TYPE =
@@ -120,25 +203,36 @@ public final class MilestoneConfigNetwork {
                     buffer.readVarInt(),buffer.readUtf(24)));
         @Override public Type<? extends CustomPacketPayload> type(){return TYPE;}
     }
-    public record IdSearchResults(String query,int offset,int total,List<String> ids)
+    public record IdSearchResults(String query,String kind,int offset,int total,
+                                  List<String> ids,List<String> names,List<String> icons)
             implements CustomPacketPayload {
         public static final Type<IdSearchResults> TYPE =
             new Type<>(ResourceLocation.fromNamespaceAndPath(Milestone.MOD_ID,"id_search_results"));
         public static final StreamCodec<RegistryFriendlyByteBuf,IdSearchResults> CODEC =
             StreamCodec.of((buffer,result)->{
                 buffer.writeUtf(result.query(),90);
+                buffer.writeUtf(result.kind(),24);
                 buffer.writeVarInt(result.offset());
                 buffer.writeVarInt(result.total());
                 buffer.writeVarInt(result.ids().size());
-                for(String id:result.ids())buffer.writeUtf(id,128);
+                for(int i=0;i<result.ids().size();i++) {
+                    buffer.writeUtf(result.ids().get(i),128);
+                    buffer.writeUtf(result.names().get(i),128);
+                    buffer.writeUtf(result.icons().get(i),128);
+                }
             },buffer->{
-                String q=buffer.readUtf(90);
+                String q=buffer.readUtf(90),kind=buffer.readUtf(24);
                 int offset=buffer.readVarInt(),total=buffer.readVarInt();
                 int size=buffer.readVarInt();
                 if(size<0||size>30)throw new IllegalArgumentException("Invalid ID search result count");
-                List<String> ids=new ArrayList<>();
-                for(int i=0;i<size;i++)ids.add(buffer.readUtf(128));
-                return new IdSearchResults(q,offset,total,List.copyOf(ids));
+                List<String> ids=new ArrayList<>(),names=new ArrayList<>(),icons=new ArrayList<>();
+                for(int i=0;i<size;i++) {
+                    ids.add(buffer.readUtf(128));
+                    names.add(buffer.readUtf(128));
+                    icons.add(buffer.readUtf(128));
+                }
+                return new IdSearchResults(q,kind,offset,total,
+                        List.copyOf(ids),List.copyOf(names),List.copyOf(icons));
             });
         @Override public Type<? extends CustomPacketPayload> type(){return TYPE;}
     }

@@ -1,6 +1,7 @@
 package net.fireboy.milestone.resonance;
 
 import net.fireboy.milestone.world.GrowthSavedData;
+import net.fireboy.milestone.server.config.MilestoneContentConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -16,8 +17,10 @@ import java.util.UUID;
  * thinner side branches wake up from established parts of the trunk.
  */
 public final class GrowthManager {
-    /** One growth update every 4 server ticks = five updates per second. */
-    public static final int GROWTH_TICK_INTERVAL = 4;
+    /** Server-configured growth cadence, in Minecraft ticks per update. */
+    public static int growthTickInterval() {
+        return MilestoneContentConfig.growthIntervalTicks();
+    }
 
     /** Number of new main-centreline points exposed per growth update. */
     public static final int POSITIONS_PER_STEP = 1;
@@ -36,7 +39,7 @@ public final class GrowthManager {
     private static final int STAGE_TWO_AGE = 22;
     private static final int STAGE_THREE_AGE = 45;
 
-    /** Maximum maturity volumes placed per plan per 4-tick update.
+    /** Maximum maturity volumes placed per plan per configured growth update.
      * Unloaded sections catch up incrementally after their chunks return. */
     private static final int MATERIALIZATION_BUDGET = 18;
 
@@ -104,7 +107,7 @@ public final class GrowthManager {
         GrowthSavedData saved = data(server);
         GrowthPlan plan = saved.get(milestoneId).orElse(null);
         if (plan == null) return false;
-        long steps = Math.max(0L, elapsedTicks / GROWTH_TICK_INTERVAL);
+        long steps = Math.max(0L, elapsedTicks / growthTickInterval());
         int cursor = (int) Math.max(plan.cursor(), Math.min((long) plan.totalPositions(), steps));
         ArrayList<Integer> ages = new ArrayList<>(plan.ages());
         for (int i = 0; i < cursor; i++) {
@@ -194,7 +197,7 @@ public final class GrowthManager {
 
     public static void onServerTick(ServerTickEvent.Post event) {
         MinecraftServer server = event.getServer();
-        if (server.getTickCount() % GROWTH_TICK_INTERVAL != 0) {
+        if (server.getTickCount() % growthTickInterval() != 0) {
             return;
         }
 

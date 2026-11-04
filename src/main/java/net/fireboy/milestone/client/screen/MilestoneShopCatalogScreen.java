@@ -152,7 +152,10 @@ public final class MilestoneShopCatalogScreen extends Screen {
         graphics.fill(rx-2,y+23,rx+font.width(rarityName)+6,y+37,0xFF343434);
         graphics.drawString(font,rarityName,rx+2,y+26,MilestoneRarityColors.color(rarity));
         graphics.drawString(font,"Price: "+value(o,"price"),x+3,y+40,0xFF333333);
-        graphics.drawString(font,"Amount: "+value(o,"count"),x+3,y+54,0xFF333333);
+        graphics.drawString(font,
+                value(o,"reward_type").equals("schematic")
+                        ?"Reward: Create schematic":"Amount: "+value(o,"count"),
+                x+3,y+54,0xFF333333);
 
         int needed=o.has("requires_core")?o.get("requires_core").getAsInt():-1;
         boolean completed=o.has("unlocked")&&o.get("unlocked").getAsBoolean();
@@ -166,12 +169,37 @@ public final class MilestoneShopCatalogScreen extends Screen {
         graphics.drawString(font,bought?"Bought this reset":
                     stocked?"In stock now":"Not in current stock",
                 x+3,y+130,bought?0xFF6A5235:stocked?0xFF2C6B37:0xFF725B28);
+        // Show actual item payments and per-condition unlock progress here,
+        // including offers currently out of stock.
+        int line=y+146;
+        if(o.has("unlock_conditions")){
+            for(var raw:o.getAsJsonArray("unlock_conditions")){
+                if(line+10>=bottom()-19)break;
+                JsonObject condition=raw.getAsJsonObject();
+                graphics.drawString(font,font.plainSubstrByWidth(
+                        MilestoneShopRequirementText.objective(condition),w-6),
+                        x+3,line,MilestoneShopRequirementText.finished(condition)
+                            ?0xFF277634:0xFF943B26);
+                line+=11;
+            }
+        }
+        if(o.has("cost_items")){
+            for(var raw:o.getAsJsonArray("cost_items")){
+                if(line+10>=bottom()-19)break;
+                JsonObject cost=raw.getAsJsonObject();
+                graphics.drawString(font,font.plainSubstrByWidth(
+                        MilestoneShopRequirementText.cost(cost),w-6),
+                        x+3,line,MilestoneShopRequirementText.costSatisfied(cost)
+                            ?0xFF277634:0xFF943B26);
+                line+=11;
+            }
+        }
         String desc=value(o,"description");
         if(!desc.isBlank()){
-            int line=y+151;
+            if(line>y+146)line+=3;
             for(var part:font.split(Component.literal(desc),w-7)){
-                if(line+10>=bottom()-18)break;
-                graphics.drawString(font,part,x+3,line,0xFF555555);
+                if(line+10>=bottom()-19)break;
+                graphics.drawString(font,part,x+3,line,0xFF333333);
                 line+=11;
             }
         }

@@ -48,7 +48,7 @@ public final class MilestoneUnlocksScreen extends Screen {
     private int rowY() { return top()+80; }
     private int rowHeight() { return 27; }
     private int capacity() { return Math.max(1,(ph()-146)/rowHeight()); }
-    private int count() { return editing ? 7 : features.size(); }
+    private int count() { return editing ? 9 : features.size(); }
     private int maxScroll() { return Math.max(0,count()-capacity()); }
     private void setScroll(double value) {
         smoothRows.drag(value,maxScroll());
@@ -90,7 +90,9 @@ public final class MilestoneUnlocksScreen extends Screen {
         JsonObject f=feature();
         if(f==null) {editing=false;rebuild();return;}
         String[] labels={"Feature ID","Display name","Unlock after Core","Lock recipes",
-                "Recipe IDs (comma-separated)","Lock machine use","Machine block IDs"};
+                "Recipe IDs / modid:*","Lock machine use","Machine block IDs",
+                "Unlock at contributors (0 = full Core)",
+                "Excluded recipe IDs"};
         // Seven rows; rows 2/3/5 are buttons and the rest use text fields.
         int visible=capacity();
         int fields=labels.length;
@@ -109,13 +111,16 @@ public final class MilestoneUnlocksScreen extends Screen {
                     button->{f.addProperty(key,!on);mark();rebuild();})
                         .bounds(l+15,y,w-48,22).build());
             }else{
-                String key=switch(row){case 0->"id";case 1->"name";case 4->"recipes";default->"machine_blocks";};
+                String key=switch(row){case 0->"id";case 1->"name";case 4->"recipes";
+                    case 7->"unlock_contributors";case 8->"exclude_recipes";
+                    default->"machine_blocks";};
                 int labelSize=Math.min(130,(w-35)/3);
-                boolean canBrowse=key.equals("recipes") || key.equals("machine_blocks");
+                boolean canBrowse=key.equals("recipes") || key.equals("machine_blocks")
+                        || key.equals("exclude_recipes");
                 int boxW=w-labelSize-(canBrowse?135:55);
                 EditBox box=new EditBox(font,l+18+labelSize,y,boxW,20,
                         Component.literal(labels[row]));
-                box.setMaxLength(row>=4?3000:80);
+                box.setMaxLength(row==7?3:row>=4?3000:80);
                 box.setValue(fieldValue(f,key));
                 box.setResponder(value->{setField(f,key,value);mark();});
                 addRenderableWidget(box);
@@ -131,14 +136,17 @@ public final class MilestoneUnlocksScreen extends Screen {
     }
     private String fieldValue(JsonObject f,String key) {
         JsonElement el=f.get(key);
-        if(el==null)return "";
+        if(el==null)return key.equals("unlock_contributors")?"0":"";
         if(!el.isJsonArray())return el.getAsString();
         StringJoiner joiner=new StringJoiner(", ");
         for(JsonElement value:el.getAsJsonArray())joiner.add(value.getAsString());
         return joiner.toString();
     }
     private void setField(JsonObject f,String key,String value) {
-        if(key.equals("recipes") || key.equals("machine_blocks")) {
+        if(key.equals("unlock_contributors")) {
+            if (value.matches("[0-9]{1,3}")) f.addProperty(key,Integer.parseInt(value));
+        } else if(key.equals("recipes") || key.equals("machine_blocks")
+                || key.equals("exclude_recipes")) {
             JsonArray array=new JsonArray();
             for(String str:value.split(",")){
                 String v=str.trim();
@@ -149,8 +157,8 @@ public final class MilestoneUnlocksScreen extends Screen {
     }
     private void browseIds(String key) {
         if(minecraft==null || feature()==null)return;
-        var kind=key.equals("recipes")?MilestoneIdPickerScreen.Kind.RECIPE
-                :MilestoneIdPickerScreen.Kind.BLOCK;
+        var kind=key.equals("recipes") || key.equals("exclude_recipes")
+                ?MilestoneIdPickerScreen.Kind.RECIPE:MilestoneIdPickerScreen.Kind.BLOCK;
         List<String> ids=new ArrayList<>();
         if(feature().has(key)) for(JsonElement entry:feature().getAsJsonArray(key))
             ids.add(entry.getAsString());
@@ -173,9 +181,11 @@ public final class MilestoneUnlocksScreen extends Screen {
         JsonArray cores=draft.getAsJsonObject("cores").getAsJsonArray("cores");
         int tier=cores.isEmpty()?0:cores.get(0).getAsJsonObject().get("tier").getAsInt();
         item.addProperty("unlock_core",tier);
+        item.addProperty("unlock_contributors",0);
         item.addProperty("lock_recipes",false);
         item.addProperty("lock_machine_use",false);
         item.add("recipes",new JsonArray());
+        item.add("exclude_recipes",new JsonArray());
         item.add("machine_blocks",new JsonArray());
         features.add(item);
         selected=features.size()-1;editing=true;scroll=0;smoothRows.reset();mark();rebuild();
@@ -241,7 +251,8 @@ public final class MilestoneUnlocksScreen extends Screen {
         renderMachineBlockIcon(gfx);
         gfx.drawCenteredString(font,editing?"Edit Feature":"Feature Unlocks",width/2,t+18,TEXT);
         if(editing) {
-            String[] label={"ID","Name","Linked Core","Recipes","Recipe IDs","Machines","Block IDs"};
+            String[] label={"ID","Name","Linked Core","Recipes","Recipe IDs",
+                    "Machines","Block IDs","At contributors","Recipe exceptions"};
             gfx.enableScissor(l+11,rowY(),l+w-13,rowY()+capacity()*rowHeight());
             for(int i=scroll;i<Math.min(label.length,scroll+capacity()+1);i++) {
                 if(i==2||i==3||i==5)continue;
@@ -249,7 +260,7 @@ public final class MilestoneUnlocksScreen extends Screen {
                     rowY()+(i-scroll)*rowHeight()-smoothRows.pixels()+6,0xFFCCCCCC);
             }
             gfx.disableScissor();
-            gfx.drawCenteredString(font,"IDs: minecraft:name or modid:name",
+            gfx.drawCenteredString(font,"Recipes: modid:* or exact ID; exceptions: exact IDs.",
                     width/2,bottom()-77,0xFFBBBBBB);
         } else {
             gfx.drawCenteredString(font,"Both locks can be ON or OFF independently.",

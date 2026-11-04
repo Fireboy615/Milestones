@@ -20,6 +20,19 @@ import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.saveddata.SavedData;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.fireboy.milestone.network.MilestoneConfigNetwork;
+import net.neoforged.neoforge.network.PacketDistributor;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+
+import java.util.ArrayDeque;
+import java.util.Map;
+import java.util.UUID;
+import java.util.WeakHashMap;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.ArrayList;
@@ -38,6 +51,33 @@ public final class WorldSiteManager {
     private static final int SPAWN_SITE_RADIUS = 100;
     private static final long EXCHANGE_SALT = 0x59A3B13L;
     private static final long MISSION_SALT = 0x647DF31L;
+    private static final int MAX_STATION_CANDIDATES = 64;
+    // Manual actions are bounded and processed on the server thread, one
+    // generation step per tick. Default automatic placement remains unchanged.
+    private static final Map<MinecraftServer, ArrayDeque<GenerationJob>> REQUESTS =
+            new WeakHashMap<>();
+
+    private enum Kind { CORE, SHOP, MISSION }
+
+    private static final class GenerationJob {
+        private final Kind kind;
+        private final int tier;
+        private final UUID requestedBy;
+        private int chunkCursor;
+        private int retries;
+        private final Random candidates;
+
+        private GenerationJob(Kind kind, int tier, UUID requestedBy, long seed) {
+            this.kind = kind;
+            this.tier = tier;
+            this.requestedBy = requestedBy;
+            this.candidates = new Random(seed);
+        }
+
+        private boolean same(Kind other, int target) {
+            return kind == other && (kind != Kind.CORE || tier == target);
+        }
+    }
 
     private WorldSiteManager() { }
 
@@ -48,12 +88,11 @@ public final class WorldSiteManager {
     public static void onServerTick(ServerTickEvent.Post event) {
         MinecraftServer server = event.getServer();
         if (!MilestoneContentConfig.enabled()) return;
+        processRequests(server);
         if (server.getTickCount() % CHECK_INTERVAL != 0) return;
         ServerLevel level = server.overworld();
         WorldSiteSavedData data = data(server);
-        if (!data.initialized()) data.initialize(planCores(server, List.of()));
-        else data.reconcile(planCores(server, data.cores()),
-                MilestoneContentConfig.server().cores().keySet());
+        ensurePlans(server, data);
         if (data.exchange().isEmpty()) trySpawnStation(level, data, true);
         if (data.mission().isEmpty()) trySpawnStation(level, data, false);
         for (WorldSiteSavedData.CorePlan plan : data.cores()) {
@@ -75,6 +114,221 @@ public final class WorldSiteManager {
             // rivers and ocean floors. Only truly unsuitable chambers relocate.
             trySpawnCore(coreLevel, data, plan);
         }
+    }
+
+    /** Use exactly the same deterministic world-site reservations as normal startup. */
+    private static void ensurePlans(MinecraftServer server, WorldSiteSavedData sites) {
+        if (!sites.initialized()) sites.initialize(planCores(server, List.of()));
+        else sites.reconcile(planCores(server, sites.cores()),
+                MilestoneContentConfig.server().cores().keySet());
+    }
+
+    private static ArrayDeque<GenerationJob> queue(MinecraftServer server) {
+        return REQUESTS.computeIfAbsent(server, ignored -> new ArrayDeque<>());
+    }
+
+    private static boolean queued(MinecraftServer server, Kind kind, int tier) {
+        return queue(server).stream().anyMatch(job -> job.same(kind, tier));
+    }
+
+    private static WorldSiteSavedData.CorePlan plan(WorldSiteSavedData sites, int tier) {
+        return sites.cores().stream().filter(candidate -> candidate.tier() == tier)
+                .findFirst().orElse(null);
+    }
+
+    /** Called only from the permission-checked config network handler.
+     * A manual request loads a bounded area; normal automatic placement doesn't. */
+    public static String requestGeneration(MinecraftServer server, UUID requester,
+                                            String action, int tier) {
+        if (!MilestoneContentConfig.enabled()) return "Enable Milestones before generating structures.";
+        if (action.equals("status")) return "Generation status refreshed.";
+        WorldSiteSavedData sites = data(server);
+        ensurePlans(server, sites);
+        if (action.equals("all")) {
+            int added = 0;
+            for (int configuredTier : configuredTiers()) {
+                if (enqueueCore(server, sites, requester, configuredTier)) added++;
+            }
+            return added == 0 ? "All configured cores are already placed or queued."
+                    : "Queued " + added + " Core(s). Chunks generate gradually; existing sites are skipped.";
+        }
+        if (action.equals("core")) {
+            if (tier < 0 || tier >= 32 || !MilestoneContentConfig.server().cores().containsKey(tier))
+                return "Unknown Core. Save it in Config before generating.";
+            if (!MilestoneContentConfig.server().core(tier).enabled())
+                return "This Core is disabled.";
+            WorldSiteSavedData.CorePlan reserved = plan(sites, tier);
+            if (reserved == null)
+                return "Core " + (tier + 1) + " has no reservation. Check its dimension and spawn rules.";
+            if (reserved.placed())
+                return "Core " + (tier + 1) + " is already placed. It will not be regenerated.";
+            if (queued(server, Kind.CORE, tier))
+                return "Core " + (tier + 1) + " is already queued.";
+            enqueueCore(server, sites, requester, tier);
+            return "Queued Core " + (tier + 1) + " in " + reserved.dimension() + ".";
+        }
+        if (action.equals("shop") || action.equals("station")) {
+            Kind kind = action.equals("shop") ? Kind.SHOP : Kind.MISSION;
+            if (kind == Kind.SHOP ? sites.exchange().isPresent() : sites.mission().isPresent())
+                return (kind == Kind.SHOP ? "Shop" : "Mission Station")
+                        + " already generated; no duplicate created.";
+            if (queued(server, kind, -1))
+                return (kind == Kind.SHOP ? "Shop" : "Mission Station") + " already queued.";
+            queue(server).add(new GenerationJob(kind, -1, requester,
+                    server.overworld().getSeed() ^ (kind == Kind.SHOP ? EXCHANGE_SALT : MISSION_SALT)));
+            return "Queued " + (kind == Kind.SHOP ? "Resonant Exchange" : "Mission Station")
+                    + " near world spawn. Searching for safe terrain.";
+        }
+        return "Unknown generation request.";
+    }
+
+    private static boolean enqueueCore(MinecraftServer server, WorldSiteSavedData sites,
+                                        UUID requester, int tier) {
+        var configured = MilestoneContentConfig.server().core(tier);
+        WorldSiteSavedData.CorePlan reserved = plan(sites, tier);
+        if (configured == null || !configured.enabled() || reserved == null
+                || reserved.placed() || queued(server, Kind.CORE, tier)) return false;
+        queue(server).add(new GenerationJob(Kind.CORE, tier, requester, 0L));
+        return true;
+    }
+
+    /** Small per-tick work budget avoids generating thousands of chunks at once. */
+    private static void processRequests(MinecraftServer server) {
+        ArrayDeque<GenerationJob> pending = queue(server);
+        if (pending.isEmpty()) return;
+        GenerationJob job = pending.peek();
+        String result;
+        try {
+            result = switch (job.kind) {
+                case CORE -> generateCoreStep(server, job);
+                case SHOP, MISSION -> generateStationStep(server, job);
+            };
+        } catch (Exception failure) {
+            org.slf4j.LoggerFactory.getLogger(WorldSiteManager.class)
+                    .error("Manual generation failed: {} Core {}", job.kind, job.tier, failure);
+            result = "Generation failed: " + failure.getClass().getSimpleName()
+                    + ". Inspect server logs; the site remains reserved.";
+        }
+        if (result == null) return; // More chunks or candidate sites to process.
+        pending.remove();
+        ServerPlayer player = server.getPlayerList().getPlayer(job.requestedBy);
+        if (player != null) {
+            player.sendSystemMessage(Component.literal("[Milestones] " + result)
+                    .withStyle(ChatFormatting.AQUA));
+            PacketDistributor.sendToPlayer(player,
+                    new MilestoneConfigNetwork.GenerationStatus(generationStatus(server, result)));
+        }
+    }
+
+    /** One chunk per tick, at most a small 3x3 neighborhood around the Core. */
+    private static String generateCoreStep(MinecraftServer server, GenerationJob job) {
+        WorldSiteSavedData sites = data(server);
+        WorldSiteSavedData.CorePlan reserved = plan(sites, job.tier);
+        if (reserved == null) return "Core " + (job.tier + 1) + " is no longer configured.";
+        if (reserved.placed()) return "Core " + (job.tier + 1) + " was already generated.";
+        ServerLevel level = levelFor(server, reserved.dimension());
+        if (level == null) return "Core " + (job.tier + 1) + " has an unavailable dimension.";
+
+        int lowX = Math.floorDiv(reserved.x() - 12, 16);
+        int highX = Math.floorDiv(reserved.x() + 12, 16);
+        int lowZ = Math.floorDiv(reserved.z() - 12, 16);
+        int highZ = Math.floorDiv(reserved.z() + 12, 16);
+        int cols = highX - lowX + 1;
+        int rows = highZ - lowZ + 1;
+        int total = cols * rows;
+        if (job.chunkCursor < total) {
+            int cx = lowX + job.chunkCursor % cols;
+            int cz = lowZ + job.chunkCursor / cols;
+            // Manual action explicitly permits generation of previously missing
+            // chunks. This does not mark them permanently force-loaded.
+            level.getChunk(cx, cz);
+            job.chunkCursor++;
+            return null;
+        }
+
+        trySpawnCore(level, sites, reserved);
+        if (plan(sites, job.tier) != null && plan(sites, job.tier).placed())
+            return "Generated Core " + (job.tier + 1) + " at "
+                    + plan(sites, job.tier).placedPos() + " (" + reserved.dimension() + ").";
+        if (++job.retries < 3) {
+            // Existing safety checks may relocate an unsuitable reservation.
+            job.chunkCursor = 0;
+            return null;
+        }
+        return "Core " + (job.tier + 1)
+                + " could not find safe terrain in three attempts; reservation kept for retry.";
+    }
+
+    /** A few near-spawn candidates are prepared per manual station request.
+     * Auto-generation still uses only player-loaded chunks. */
+    private static String generateStationStep(MinecraftServer server, GenerationJob job) {
+        WorldSiteSavedData sites = data(server);
+        boolean exchange = job.kind == Kind.SHOP;
+        BlockPos placed = (exchange ? sites.exchange() : sites.mission()).orElse(null);
+        String title = exchange ? "Resonant Exchange" : "Mission Station";
+        if (placed != null) return title + " already placed at " + placed + ".";
+        if (job.retries >= MAX_STATION_CANDIDATES)
+            return "No safe site found for " + title + " in " + MAX_STATION_CANDIDATES
+                    + " near-spawn candidates; try again after inspecting the terrain.";
+
+        ServerLevel level = server.overworld();
+        BlockPos spawn = level.getSharedSpawnPos();
+        double angle = job.candidates.nextDouble() * Math.PI * 2.0D;
+        int distance = 28 + job.candidates.nextInt(SPAWN_SITE_RADIUS - 28);
+        int x = spawn.getX() + (int) Math.round(Math.cos(angle) * distance);
+        int z = spawn.getZ() + (int) Math.round(Math.sin(angle) * distance);
+        job.retries++;
+
+        BlockPos probe = new BlockPos(x, level.getSeaLevel(), z);
+        if (!level.getWorldBorder().isWithinBounds(probe)) return null;
+
+        // Only the chunks needed for the 5x5 platform are generated.
+        for (int cx = Math.floorDiv(x - 4, 16); cx <= Math.floorDiv(x + 4, 16); cx++)
+            for (int cz = Math.floorDiv(z - 4, 16); cz <= Math.floorDiv(z + 4, 16); cz++)
+                level.getChunk(cx, cz);
+        if (tryPlaceStationCandidate(level, sites, exchange, x, z))
+            return "Generated " + title + " at "
+                    + (exchange ? sites.exchange().orElseThrow() : sites.mission().orElseThrow()) + ".";
+        return null;
+    }
+
+    /** Shared safe-site validation used by manual generation. */
+    private static boolean tryPlaceStationCandidate(ServerLevel level, WorldSiteSavedData sites,
+                                                     boolean exchange, int x, int z) {
+        BlockPos anchor = stationAnchor(level, x, z);
+        if (anchor == null) return false;
+        BlockPos other = exchange ? sites.mission().orElse(null) : sites.exchange().orElse(null);
+        if (other != null && other.distSqr(anchor) < 35L * 35L) return false;
+        if (!stationSiteValid(level, anchor)) return false;
+        buildStation(level, anchor, exchange);
+        if (exchange) sites.setExchange(anchor); else sites.setMission(anchor);
+        return true;
+    }
+
+    /** Authoritative world status for the operator's generation screen. */
+    public static String generationStatus(MinecraftServer server, String message) {
+        JsonObject result = new JsonObject();
+        result.addProperty("message", message);
+        WorldSiteSavedData sites = data(server);
+        result.addProperty("shop", sites.exchange().isPresent() ? "Placed"
+                : queued(server, Kind.SHOP, -1) ? "Queued" : "Not generated");
+        result.addProperty("station", sites.mission().isPresent() ? "Placed"
+                : queued(server, Kind.MISSION, -1) ? "Queued" : "Not generated");
+        JsonArray cores = new JsonArray();
+        for (int tier : configuredTiers()) {
+            JsonObject row = new JsonObject();
+            var configured = MilestoneContentConfig.server().core(tier);
+            var reserved = plan(sites, tier);
+            row.addProperty("tier", tier);
+            row.addProperty("name", configured.name());
+            row.addProperty("dimension", configured.dimension());
+            row.addProperty("state", reserved != null && reserved.placed() ? "Placed"
+                    : queued(server, Kind.CORE, tier) ? "Queued"
+                    : reserved == null ? "Not reserved" : "Reserved");
+            cores.add(row);
+        }
+        result.add("cores", cores);
+        return result.toString();
     }
 
     /** One-time migration of legacy saved Cores created before per-Core tier identity existed. */

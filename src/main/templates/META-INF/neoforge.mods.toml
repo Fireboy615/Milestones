@@ -12,6 +12,9 @@ Private SMP utility and progression mod built around discoverable Milestones,
 shared objectives, world events, and server progression.
 '''
 
+[[mixins]]
+config="milestone.mixins.json"
+
 [[dependencies.${mod_id}]]
 modId="neoforge"
 type="required"

@@ -45,6 +45,7 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
     private Button nextButton;
     private Button claimButton;
     private Button verifyButton;
+    private Button submitReadyButton;
     private Button adminButton;
     private Button debugButton;
     private Button clearDebugButton;
@@ -99,6 +100,7 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
         nextButton=null;
         claimButton=null;
         verifyButton=null;
+        submitReadyButton=null;
         adminButton=null;
         debugButton=null;
         clearDebugButton=null;
@@ -136,6 +138,9 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
         verifyButton = addRenderableWidget(Button.builder(Component.literal("Verify Build"),
                 button -> stationAction(MilestoneMenu.BUTTON_VERIFY_STRUCTURE))
                 .bounds(leftPos + 93, topPos + 119, 75, 18).build());
+        submitReadyButton=addRenderableWidget(Button.builder(Component.literal("Submit Contribution"),
+                button -> stationAction(MilestoneMenu.BUTTON_SUBMIT_READY))
+                .bounds(leftPos + 8, topPos + 119, 160, 18).build());
         debugButton=addRenderableWidget(Button.builder(Component.literal("Debug"),
                 b->showDebug(true)).bounds(leftPos+121,topPos+35,47,14).build());
     }
@@ -175,8 +180,17 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
         }
         if (nextButton != null) nextButton.active = menu.availableCount() > 1;
         if (claimButton != null) claimButton.active = menu.availableCount() > 0;
-        if (verifyButton != null) verifyButton.active =
-                menu.availableCount() > 0 && !menu.structureVerified();
+        if (verifyButton != null) {
+            verifyButton.visible = menu.availableCount() > 0 && !menu.structureVerified();
+            verifyButton.active = verifyButton.visible;
+        }
+        if (claimButton != null) claimButton.visible = menu.availableCount() > 0 && !menu.structureVerified();
+        if (submitReadyButton != null) {
+            submitReadyButton.visible = menu.availableCount() > 0 && menu.structureVerified()
+                    && !(menu.taskDefinition() instanceof ItemSubmissionTaskDefinition)
+                    && !menu.taskComplete();
+            submitReadyButton.active = submitReadyButton.visible && menu.taskReady();
+        }
         super.render(graphics, mouseX, mouseY, partialTick);
         renderTooltip(graphics, mouseX, mouseY);
     }
@@ -204,7 +218,7 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
         }
 
         int contributors = menu.contributorCount();
-        int target = Math.max(menu.minimumContributors(), menu.milestoneType().finalThreshold());
+        int target = menu.finalThreshold();
         int barX = leftPos + 8;
         int barY = topPos + 112;
         int barWidth = 160;
@@ -287,23 +301,24 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
             graphics.drawString(font, "Offer", 143, 34, MUTED_TEXT, false);
         }
 
-        String status = menu.taskComplete() ? "Complete" : "Incomplete";
+        String status = menu.taskComplete() ? "Accepted"
+                : menu.taskReady() ? "Ready to submit" : "In progress";
         graphics.drawString(
                 font,
                 "Status: " + status,
                 8,
                 84,
-                menu.taskComplete() ? COMPLETE_TEXT : INCOMPLETE_TEXT,
+                menu.taskComplete() || menu.taskReady() ? COMPLETE_TEXT : INCOMPLETE_TEXT,
                 false
         );
 
         graphics.drawString(font, completionMode(task), 8, 95, MUTED_TEXT, false);
 
         int contributors = menu.contributorCount();
-        int required = menu.minimumContributors();
-        graphics.drawString(font, "Contributors: " + contributors + "/" + required + " required", 8, 103, VANILLA_TEXT, false);
+        int required = menu.finalThreshold();
+        graphics.drawString(font, "Contributors: " + contributors + "/" + required + " to complete", 8, 103, VANILLA_TEXT, false);
 
-        MilestoneType.RewardThreshold next = menu.nextThreshold();
+        MilestoneContentConfig.RewardStage next = menu.nextThreshold();
         String nextText = next == null
                 ? "All participation rewards unlocked"
                 : "Next: " + next.contributors() + " - " + next.description();
@@ -350,10 +365,10 @@ public final class MilestoneScreen extends AbstractContainerScreen<MilestoneMenu
             return "Drag the item into the slot.";
         }
         if (task instanceof KillTaskDefinition hunt) {
-            return "Kill " + hunt.count() + " target(s) yourself.";
+            return "Finish hunt, then submit here.";
         }
         if (task instanceof AdvancementTaskDefinition) {
-            return "Automatic: advancement.";
+            return "Earn advancement, submit here.";
         }
         return "No completion method available.";
     }

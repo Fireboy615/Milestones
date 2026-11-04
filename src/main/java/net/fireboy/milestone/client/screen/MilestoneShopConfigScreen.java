@@ -21,14 +21,15 @@ import java.util.*;
  */
 public final class MilestoneShopConfigScreen extends Screen {
     private static final String[] FIELDS={
-            "id","name","description","item","count","price","rarity","requires_core"
+            "id","name","description","reward_type","schematic","item","count","price","rarity","requires_core"
     };
     private static final List<String> RARITIES=
             List.of("common","uncommon","rare","epic","legendary");
     private static final Map<String,Integer> DEFAULT_LIMITS=
             Map.of("common",6,"uncommon",5,"rare",4,"epic",3,"legendary",2);
     private static final String[] LABELS={
-            "Offer ID","Display name","Description","Item","Amount","Price","Rarity","Unlock after Core"
+            "Offer ID","Display name","Description","Reward type","Create Schematic",
+            "Item","Amount","Price","Rarity","Unlock after Core"
     };
     private final MilestoneConfigScreen parent;
     private final JsonObject draft;
@@ -60,6 +61,7 @@ public final class MilestoneShopConfigScreen extends Screen {
         shop=root.getAsJsonObject("shop");
         if(!shop.has("offers"))shop.add("offers",new JsonArray());
         if(!shop.has("credits_per_contribution"))shop.addProperty("credits_per_contribution",10);
+        if(!shop.has("player_intel_price"))shop.addProperty("player_intel_price",100);
         if(!shop.has("max_per_rarity")) {
             JsonObject limits=new JsonObject();
             for(String rarity:RARITIES)
@@ -138,6 +140,20 @@ public final class MilestoneShopConfigScreen extends Screen {
                 b->onClose()).bounds(l+12,t+10,84,20).build());
 
         if(editingLimits) {
+            EditBox intelPrice=new EditBox(font,l+238,t+245,86,20,
+                    Component.literal("Player Intel price"));
+            intelPrice.setMaxLength(7);
+            intelPrice.setValue(shop.get("player_intel_price").getAsString());
+            intelPrice.setResponder(value->{
+                try {
+                    int amount=Integer.parseInt(value);
+                    if(amount>=0&&amount<=1000000){
+                        shop.addProperty("player_intel_price",amount);
+                        mark();
+                    }else status="Intel price must be 0-1000000";
+                }catch(NumberFormatException ignored){}
+            });
+            addRenderableWidget(intelPrice);
             for(int i=0;i<RARITIES.size();i++) {
                 String rarity=RARITIES.get(i);
                 int y=t+67+i*38;
@@ -233,6 +249,11 @@ public final class MilestoneShopConfigScreen extends Screen {
 
         JsonObject o=offer();
         if(o==null){editing=false;smoothRows.reset();rebuild();return;}
+        addRenderableWidget(Button.builder(Component.literal("Costs & Unlocks"),
+                b->{
+                    if(minecraft!=null)
+                        minecraft.setScreen(new MilestoneShopRequirementsScreen(this,o,this::mark));
+                }).bounds(l+w-170,t+10,156,20).build());
         scroll=Math.min(smoothRows.first(),maxScroll());
         for(int i=scroll;i<Math.min(FIELDS.length,scroll+rowsFit()+1);i++){
             int y=rowTop()+(i-scroll)*rowHeight();
@@ -247,6 +268,21 @@ public final class MilestoneShopConfigScreen extends Screen {
                 addRenderableWidget(Button.builder(Component.literal(
                         tier<0?"Available immediately":"Requires Core "+(tier+1)),
                         b->cycleCore()).bounds(l+149,y,w-175,19).build());
+            }else if(key.equals("reward_type")){
+                boolean schematic=isSchematicOffer(o);
+                addRenderableWidget(Button.builder(Component.literal(schematic
+                        ?"Reward: Filled Create Schematic":"Reward: Item Stack"),
+                        b->toggleRewardType()).bounds(l+149,y,w-175,19).build());
+            }else if(key.equals("schematic")){
+                boolean schematic=isSchematicOffer(o);
+                Button pick=addRenderableWidget(Button.builder(Component.literal(
+                        schematic?"Schematic: "+schematicLabel(o):"Select Schematic reward first"),
+                        b->cycleOfferSchematic()).bounds(l+149,y,w-175,19).build());
+                pick.active=schematic&&!availableSchematics().isEmpty();
+            }else if(isSchematicOffer(o) && (key.equals("item")||key.equals("count"))){
+                addRenderableWidget(Button.builder(Component.literal(key.equals("item")
+                        ?"Create Filled Schematic (automatic)":"1 schematic per purchase"),
+                        b->{}).bounds(l+149,y,w-175,19).build()).active=false;
             }else{
                 int x=l+149,inputW=w-176;
                 boolean picker=key.equals("item");
@@ -301,9 +337,65 @@ public final class MilestoneShopConfigScreen extends Screen {
         o.addProperty("price",10);
         o.addProperty("rarity","common");
         o.addProperty("requires_core",-1);
+        o.addProperty("reward_type","item");
+        o.addProperty("schematic","");
+        o.add("cost_items",new JsonArray());
+        o.add("unlock_conditions",new JsonArray());
         offers.add(o);
         selected=offers.size()-1;
         editing=true;scroll=0;smoothRows.reset();mark();rebuild();
+    }
+    private static boolean isSchematicOffer(JsonObject o){
+        return o.has("reward_type") && o.get("reward_type").getAsString().equals("schematic");
+    }
+    private List<JsonObject> availableSchematics() {
+        JsonObject root=draft.getAsJsonObject("cores");
+        List<JsonObject> result=new ArrayList<>();
+        if(root.has("schematics"))
+            for(JsonElement raw:root.getAsJsonArray("schematics"))
+                result.add(raw.getAsJsonObject());
+        return result;
+    }
+    private String schematicLabel(JsonObject o) {
+        String id=o.has("schematic")?o.get("schematic").getAsString():"";
+        for(JsonObject candidate:availableSchematics())
+            if(candidate.get("id").getAsString().equals(id))
+                return candidate.get("name").getAsString();
+        return "(not selected)";
+    }
+    private void toggleRewardType() {
+        JsonObject o=offer();
+        if(o==null)return;
+        if(isSchematicOffer(o)) {
+            o.addProperty("reward_type","item");
+        }else{
+            var available=availableSchematics();
+            if(available.isEmpty()){
+                status="Import a Create .nbt under Config > Schematics first";
+                return;
+            }
+            o.addProperty("reward_type","schematic");
+            o.addProperty("count",1);
+            String id=o.has("schematic")?o.get("schematic").getAsString():"";
+            if(available.stream().noneMatch(e->e.get("id").getAsString().equals(id))){
+                o.addProperty("schematic",available.get(0).get("id").getAsString());
+                o.addProperty("name",available.get(0).get("name").getAsString());
+            }
+        }
+        mark();rebuild();
+    }
+    private void cycleOfferSchematic() {
+        JsonObject o=offer();
+        var available=availableSchematics();
+        if(o==null||!isSchematicOffer(o)||available.isEmpty())return;
+        String current=o.has("schematic")?o.get("schematic").getAsString():"";
+        int index=-1;
+        for(int i=0;i<available.size();i++)
+            if(available.get(i).get("id").getAsString().equals(current))index=i;
+        JsonObject next=available.get((index+1)%available.size());
+        o.addProperty("schematic",next.get("id").getAsString());
+        o.addProperty("name",next.get("name").getAsString());
+        mark();rebuild();
     }
     private void cycleRarity(){
         JsonObject o=offer();
@@ -433,8 +525,9 @@ public final class MilestoneShopConfigScreen extends Screen {
                 g.drawString(font,MilestoneRarityColors.label(rarity),
                         l+41,y+6,MilestoneRarityColors.color(rarity));
             }
+            g.drawString(font,"Player Intel price (0 disables)",l+41,t+249,0xFFEEEEEE);
             g.drawCenteredString(font,"0 = none  |  Stock shuffles every reset",
-                    width/2,t+h-32,0xFFBDBDBD);
+                    width/2,t+h-14,0xFFBDBDBD);
         }else if(!editing){
             g.drawString(font,"Credits per contribution",l+13,t+41,0xFFCCCCCC);
             if(filtered().isEmpty())

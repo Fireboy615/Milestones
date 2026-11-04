@@ -1,12 +1,18 @@
 {
-  "_help": "Each Core can use task_mode preset (difficulty+categories filters) or manual (exact task_ids). Dimension, biomes and depth control generation of NEW sites only. rewards: XP/items per successful contributor; console commands once at final Core completion.",
+  "_help": "Reward stages determine when a Core completes: the highest contributor threshold, or one contribution when no stages exist. Existing configurations without reward_stages retain legacy profiles. Dimension, biome and depth affect new sites. XP/items reward each unique contributor; reward_commands run on final completion.",
   "enabled": true,
+  "growth_interval_ticks": 40,
   "cores": [
     {
       "tier": 0,
       "enabled": true,
       "profile": "generic",
       "name": "Milestone 1",
+      "reward_stages": [
+        {"contributors": 4, "description": "Primary milestone unlocked"},
+        {"contributors": 5, "description": "Bonus participation tier I"},
+        {"contributors": 6, "description": "Bonus participation tier II"}
+      ],
       "min_y": -54,
       "max_y": 120,
       "min_distance": 0,
@@ -31,6 +37,12 @@
       "enabled": true,
       "profile": "nether_gate",
       "name": "Nether Milestone",
+      "reward_stages": [
+        {"contributors": 4, "description": "Shared Nether gateway unlocked", "unlock": "SHARED_NETHER_GATEWAY"},
+        {"contributors": 5, "description": "First additional public gateway unlocked", "unlock": "NETHER_PUBLIC_GATEWAY_1"},
+        {"contributors": 6, "description": "Second additional public gateway unlocked", "unlock": "NETHER_PUBLIC_GATEWAY_2"},
+        {"contributors": 7, "description": "Ordinary personal Nether portals unlocked", "unlock": "NETHER_PERSONAL_PORTALS"}
+      ],
       "min_y": -54,
       "max_y": 120,
       "min_distance": 0,

@@ -2,6 +2,7 @@ package net.fireboy.milestone.item;
 
 import net.fireboy.milestone.milestone.MilestoneManager;
 import net.fireboy.milestone.milestone.MilestoneRecord;
+import net.fireboy.milestone.server.config.MilestoneContentConfig;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
@@ -80,7 +81,7 @@ public final class DiscoverySchematicItem extends Item {
                 if (current != null && current.discoveredBy() != null) {
                     serverPlayer.sendSystemMessage(Component.literal("Current state: "
                             + current.state().name() + "  |  Contributions: "
-                            + current.contributorCount() + "/" + current.type().minimumContributors())
+                            + current.contributorCount() + "/" + MilestoneContentConfig.finalThreshold(current))
                             .withStyle(ChatFormatting.GREEN));
                 }
                 serverPlayer.sendSystemMessage(Component.literal(

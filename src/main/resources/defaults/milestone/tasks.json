@@ -1,5 +1,17 @@
 {
-  "_help": "Add tasks: types item (item,count), kill (entity,count), advancement (advancement). category and difficulty are labels used in a Core's preset task mode.",
+  "_help": "Create tasks as item, kill or advancement. Reuse them in named task groups (groups[].task_ids); each Core chooses one group. Legacy category/difficulty fields are ignored by grouped Cores.",
+  "groups": [
+    {
+      "id": "starter",
+      "name": "Starter Tasks",
+      "task_ids": ["collect_copper", "hunt_spider", "hunt_zombies_10", "collect_redstone"]
+    },
+    {
+      "id": "advanced",
+      "name": "Advanced Tasks",
+      "task_ids": ["mine_diamonds", "hunt_endermen_20", "hunt_evokers_5"]
+    }
+  ],
   "tasks": [
     {
       "id": "collect_copper",

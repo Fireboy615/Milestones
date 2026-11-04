@@ -3,6 +3,7 @@ package net.fireboy.milestone.network;
 import net.fireboy.milestone.Milestone;
 import net.fireboy.milestone.shop.MilestoneShop;
 import net.fireboy.milestone.shop.MilestoneShopStock;
+import net.fireboy.milestone.shop.MilestoneShopPlayerIntel;
 import net.fireboy.milestone.server.config.MilestoneContentConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -22,8 +23,9 @@ public final class MilestoneShopNetwork {
     public static void register(RegisterPayloadHandlersEvent event) {
         var channel=event.registrar("1");
         channel.playToServer(ShopRequest.TYPE,ShopRequest.CODEC,MilestoneShopNetwork::request);
-        channel.playToClient(ShopView.TYPE,ShopView.CODEC,MilestoneShopNetwork::view);
-        channel.playToClient(OpenShop.TYPE,OpenShop.CODEC,MilestoneShopNetwork::open);
+        channel.playToClient(ShopView.TYPE,ShopView.CODEC,MilestoneClientboundBridge::handle);
+        channel.playToClient(OpenShop.TYPE,OpenShop.CODEC,MilestoneClientboundBridge::handle);
+        channel.playToClient(ShopIntelView.TYPE,ShopIntelView.CODEC,MilestoneClientboundBridge::handle);
     }
     private static void request(ShopRequest packet, IPayloadContext context) {
         if (!(context.player() instanceof ServerPlayer player))return;
@@ -33,6 +35,22 @@ public final class MilestoneShopNetwork {
             PacketDistributor.sendToPlayer(player,new ShopView(
                     "{\"balance\":0,\"earned\":0,\"offers\":[]}",
                     "Move closer to the Resonant Exchange to use the shop."));
+            return;
+        }
+        if(packet.action().equals("intel_list") || packet.action().equals("intel_buy")) {
+            String message="";
+            boolean success=false;
+            if(packet.action().equals("intel_buy")) {
+                if(packet.offerId().length()>64)return;
+                MilestoneShopPlayerIntel.Report purchase=MilestoneShopPlayerIntel.purchase(
+                        player,packet.offerId(),packet.station());
+                message=purchase.message();
+                success=purchase.success();
+            }
+            com.google.gson.JsonObject intel=MilestoneShopPlayerIntel.listing(
+                    player,MilestoneShop.playerIntelPrice());
+            intel.addProperty("purchase_success",success);
+            PacketDistributor.sendToPlayer(player,new ShopIntelView(intel.toString(),message));
             return;
         }
         String message="";
@@ -65,12 +83,7 @@ public final class MilestoneShopNetwork {
         PacketDistributor.sendToPlayer(player,new ShopView(
                 MilestoneShop.snapshot(player),message));
     }
-    private static void open(OpenShop packet,IPayloadContext context) {
-        if (!context.player().level().isClientSide()) return;
-        var client=net.minecraft.client.Minecraft.getInstance();
-        // The server sends this only after a valid Resonant Exchange interaction.
-        client.setScreen(new net.fireboy.milestone.client.screen.MilestoneShopScreen(packet.pos()));
-    }
+
     public record OpenShop(BlockPos pos) implements CustomPacketPayload {
         public static final Type<OpenShop> TYPE=
                 new Type<>(ResourceLocation.fromNamespaceAndPath(Milestone.MOD_ID,"open_shop"));
@@ -78,10 +91,15 @@ public final class MilestoneShopNetwork {
                 StreamCodec.composite(BlockPos.STREAM_CODEC,OpenShop::pos,OpenShop::new);
         @Override public Type<? extends CustomPacketPayload> type(){return TYPE;}
     }
-    private static void view(ShopView packet,IPayloadContext context) {
-        var current=net.minecraft.client.Minecraft.getInstance().screen;
-        if(current instanceof net.fireboy.milestone.client.screen.MilestoneShopScreen screen)
-            screen.onShopView(packet.catalogJson(),packet.message());
+
+
+    public record ShopIntelView(String json,String message) implements CustomPacketPayload {
+        public static final Type<ShopIntelView> TYPE=
+                new Type<>(ResourceLocation.fromNamespaceAndPath(Milestone.MOD_ID,"shop_intel_view"));
+        public static final StreamCodec<RegistryFriendlyByteBuf,ShopIntelView> CODEC=
+                StreamCodec.composite(ByteBufCodecs.STRING_UTF8,ShopIntelView::json,
+                        ByteBufCodecs.STRING_UTF8,ShopIntelView::message,ShopIntelView::new);
+        @Override public Type<? extends CustomPacketPayload> type(){return TYPE;}
     }
     public record ShopRequest(BlockPos station,String offerId,String action) implements CustomPacketPayload {
         public static final Type<ShopRequest> TYPE=

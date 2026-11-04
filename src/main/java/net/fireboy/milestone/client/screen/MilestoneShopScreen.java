@@ -60,6 +60,7 @@ public final class MilestoneShopScreen extends Screen {
     private String selectedId;
     private int balance;
     private int lifetime;
+    private int hourlyPay;
     private boolean draggingScrollbar;
     private boolean waiting;
     private boolean firstLoad = true;
@@ -72,7 +73,9 @@ public final class MilestoneShopScreen extends Screen {
     private Button refreshButton;
     private Button catalogButton;
     private Button rerollButton;
+    private Button intelButton;
     private boolean canReroll;
+    private int intelPrice=100;
 
     public MilestoneShopScreen(BlockPos pos) {
         super(Component.literal("Resonant Exchange"));
@@ -191,6 +194,11 @@ public final class MilestoneShopScreen extends Screen {
                         .bounds(l()+179,b()-19,92,16).build())
                 :null;
         if(rerollButton!=null)rerollButton.active=!waiting;
+        intelButton=intelPrice>0
+                ?addRenderableWidget(Button.builder(Component.literal("Player Intel"),
+                        button->openIntel()).bounds(l()+(canReroll?275:179),b()-19,91,16).build())
+                :null;
+        if(intelButton!=null)intelButton.active=!waiting;
 
         JsonObject offer=selected();
         if(offer!=null) {
@@ -207,7 +215,9 @@ public final class MilestoneShopScreen extends Screen {
                     Component.literal(bought?"Bought":"Buy"),
                     button->request(selectedId,"buy"))
                     .bounds(x+w-half-7,buttonY,half,18).build());
-            buyButton.active=unlocked&&balance>=price&&!waiting&&!bought;
+            buyButton.active=unlocked&&balance>=price&&!waiting&&!bought
+                    &&(!offer.has("items_affordable")
+                            ||offer.get("items_affordable").getAsBoolean());
         }else {
             reserveButton=null;
             buyButton=null;
@@ -220,6 +230,10 @@ public final class MilestoneShopScreen extends Screen {
     private void openCatalog() {
         if(minecraft!=null)
             minecraft.setScreen(new MilestoneShopCatalogScreen(this,allOffers));
+    }
+    private void openIntel() {
+        if(minecraft!=null)
+            minecraft.setScreen(new MilestoneShopIntelScreen(this,exchange,intelPrice,balance));
     }
     private void rebuild() {clearWidgets();init();}
     private void request(String id,String action) {
@@ -245,8 +259,11 @@ public final class MilestoneShopScreen extends Screen {
                 }
             }
             canReroll=root.has("can_reroll")&&root.get("can_reroll").getAsBoolean();
+            intelPrice=root.has("player_intel_price")
+                    ?root.get("player_intel_price").getAsInt():100;
             balance=root.get("balance").getAsInt();
             lifetime=root.get("earned").getAsInt();
+            hourlyPay=root.has("hourly_pay")?root.get("hourly_pay").getAsInt():0;
             resetSeconds=root.has("reset_seconds")?root.get("reset_seconds").getAsLong():0L;
             clockTicks=0L;
             waiting=false;
@@ -367,11 +384,20 @@ public final class MilestoneShopScreen extends Screen {
         }
         if(offer.has("reserved")&&offer.get("reserved").getAsBoolean())
             g.fill(x+SLOT-7,y+2,x+SLOT-2,y+7,0xFFE6CD52);
+        if(offer.has("reward_type")&&offer.get("reward_type").getAsString().equals("schematic")) {
+            g.fill(x+2,y+2,x+10,y+11,0xDD263F50);
+            g.drawString(font,"S",x+3,y+2,0xFFF2D89D);
+        }
         // Only a purchased offer is greyed out. Empty slots are neutral;
         // future stock previews are never displayed in the buying menu.
         if(offer.has("purchased")&&offer.get("purchased").getAsBoolean()){
             g.fill(x+2,y+2,x+SLOT-2,y+SLOT-2,0xB0464646);
             g.drawCenteredString(font,"x",x+SLOT/2,y+SLOT/2-4,0xFFF0F0F0);
+        }else if(offer.has("unlocked")&&!offer.get("unlocked").getAsBoolean()){
+            // Unavailable unlocks remain visible, with a small dark "L"
+            // marker so they are distinguishable from purchased X slots.
+            g.fill(x+SLOT-10,y+SLOT-11,x+SLOT-2,y+SLOT-2,0xE42B2B2B);
+            g.drawString(font,"L",x+SLOT-9,y+SLOT-10,0xFFFFC66A);
         }
     }
     private void details(GuiGraphics g,JsonObject offer, boolean textPass) {
@@ -401,25 +427,68 @@ public final class MilestoneShopScreen extends Screen {
         g.drawString(font,label,x+12,y+44,MilestoneRarityColors.color(rarity));
         boolean unlocked=offer.get("unlocked").getAsBoolean();
         boolean bought=offer.has("purchased")&&offer.get("purchased").getAsBoolean();
+        int lineY=y+63;
+        int lastLine=y+h-70;
+        if(offer.has("reward_type")&&offer.get("reward_type").getAsString().equals("schematic")){
+            g.drawString(font,"Filled Create Schematic",x+8,lineY,0xFF24566D);
+            lineY+=12;
+        }
         if(bought) {
-            g.drawString(font,"Purchased this reset",x+8,y+65,0xFF624318);
-            g.drawString(font,"Available next reset",x+8,y+79,INFO_INK);
-        } else if(unlocked) {
+            g.drawString(font,"Purchased this reset",x+8,lineY,0xFF624318);
+            lineY+=12;
+        }
+        boolean coreUnlocked=!offer.has("core_unlocked")
+                ||offer.get("core_unlocked").getAsBoolean();
+        if(!coreUnlocked){
+            g.drawString(font,"Core "+(offer.get("requires_core").getAsInt()+1)
+                    +" required",x+8,lineY,0xFF972C2C);
+            lineY+=12;
+        }
+        if(offer.has("unlock_conditions")){
+            var objectives=offer.getAsJsonArray("unlock_conditions");
+            if(!objectives.isEmpty()){
+                g.drawString(font,"UNLOCK OBJECTIVES",x+8,lineY,INFO_INK);
+                lineY+=11;
+                for(var raw:objectives) {
+                    if(lineY>lastLine)break;
+                    JsonObject row=raw.getAsJsonObject();
+                    String text=MilestoneShopRequirementText.objective(row);
+                    g.drawString(font,font.plainSubstrByWidth(text,w-17),x+8,lineY,
+                            MilestoneShopRequirementText.finished(row)
+                                ?0xFF216E31:0xFF8C3F16);
+                    lineY+=11;
+                }
+            }
+        }
+        if(offer.has("cost_items")){
+            var costs=offer.getAsJsonArray("cost_items");
+            if(!costs.isEmpty() && lineY<=lastLine) {
+                g.drawString(font,"ITEM PAYMENT",x+8,lineY,INFO_INK);
+                lineY+=11;
+                for(var raw:costs) {
+                    if(lineY>lastLine)break;
+                    JsonObject row=raw.getAsJsonObject();
+                    g.drawString(font,font.plainSubstrByWidth(
+                            MilestoneShopRequirementText.cost(row),w-17),x+8,lineY,
+                            MilestoneShopRequirementText.costSatisfied(row)
+                                ?0xFF216E31:0xFF9A3927);
+                    lineY+=11;
+                }
+            }
+        }
+        if(!bought && lineY<=lastLine){
             String description=offer.has("description")
                     ?offer.get("description").getAsString():"";
-            if(description.isBlank()) description="Available this rotation";
-            int lineY=y+65;
+            if(description.isBlank() && unlocked)
+                description="Available this rotation";
             for(var line:font.split(Component.literal(description),w-18)) {
-                if(lineY>y+h-74) break;
-                g.drawString(font,line,x+9,lineY,INFO_INK);
+                if(lineY>lastLine)break;
+                g.drawString(font,line,x+9,lineY,INFO_MUTED);
                 lineY+=11;
             }
-            if(offer.has("reserved")&&offer.get("reserved").getAsBoolean())
-                g.drawString(font,"Reserved for you",x+8,y+h-68,0xFF705010);
-        } else {
-            g.drawString(font,"LOCKED",x+8,y+59,0xFF9B2929);
-            g.drawString(font,"Complete Core "+(offer.get("requires_core").getAsInt()+1),
-                    x+8,y+73,INFO_INK);
+        }
+        if(offer.has("reserved")&&offer.get("reserved").getAsBoolean()) {
+            g.drawString(font,"Reserved for you",x+8,y+h-68,0xFF705010);
         }
         int price=offer.get("price").getAsInt();
         g.drawString(font,"Price: "+price+" credits",x+9,y+h-53,HEADER_TEXT);
@@ -451,7 +520,12 @@ public final class MilestoneShopScreen extends Screen {
         // of the player's GUI scale or the light stone shop texture.
         g.fill(x+12,y+10,x+180,y+44,HEADER_BG);
         g.drawString(font,"Credits",x+19,y+15,HEADER_TEXT);
-        g.drawString(font,Integer.toString(balance),x+91,y+15,0xFFFFE49A);
+        String balanceText=Integer.toString(balance);
+        g.drawString(font,balanceText,x+73,y+15,0xFFFFE49A);
+        int payX=Math.max(x+115,x+78+font.width(balanceText));
+        if(payX<x+176)
+            g.drawString(font,font.plainSubstrByWidth(
+                    "+$"+hourlyPay+"/h",x+178-payX),payX,y+15,0xFFFFE49A);
         g.drawString(font,"Next reset",x+19,y+30,HEADER_TEXT);
         g.drawString(font,timer(),x+91,y+30,HEADER_TEXT);
         details(g,selected(),true);
@@ -497,11 +571,29 @@ public final class MilestoneShopScreen extends Screen {
         if(refreshButton!=null)refreshButton.render(g,mx,my,partial);
         if(catalogButton!=null)catalogButton.render(g,mx,my,partial);
         if(rerollButton!=null)rerollButton.render(g,mx,my,partial);
+        if(intelButton!=null)intelButton.render(g,mx,my,partial);
         if(reserveButton!=null)reserveButton.render(g,mx,my,partial);
         if(buyButton!=null)buyButton.render(g,mx,my,partial);
         if(hovered(mx,my)!=null) {
             JsonObject row=hovered(mx,my);
-            g.renderTooltip(font,Component.literal(row.get("name").getAsString()),mx,my);
+            java.util.List<Component> lines=new java.util.ArrayList<>();
+            lines.add(Component.literal(row.get("name").getAsString()));
+            if(row.has("reward_type")&&row.get("reward_type").getAsString().equals("schematic"))
+                lines.add(Component.literal("Filled Create schematic: "+
+                        row.get("schematic").getAsString()));
+            if(row.has("requires_core") && row.get("requires_core").getAsInt()>=0)
+                lines.add(Component.literal("Core "+(row.get("requires_core").getAsInt()+1)+
+                        " required"));
+            if(row.has("unlock_conditions"))
+                for(var raw:row.getAsJsonArray("unlock_conditions"))
+                    lines.add(Component.literal(MilestoneShopRequirementText.objective(
+                            raw.getAsJsonObject())));
+            if(row.has("cost_items"))
+                for(var raw:row.getAsJsonArray("cost_items"))
+                    lines.add(Component.literal(MilestoneShopRequirementText.cost(
+                            raw.getAsJsonObject())));
+            lines.add(Component.literal("Credits: "+row.get("price").getAsInt()));
+            g.renderTooltip(font,lines,java.util.Optional.empty(),mx,my);
         }
     }
     private JsonObject hovered(int mx,int my) {

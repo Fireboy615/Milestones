@@ -1,6 +1,7 @@
 package net.fireboy.milestone.milestone;
 
 import net.fireboy.milestone.task.MilestoneTaskCatalog;
+import net.fireboy.milestone.server.config.MilestoneContentConfig;
 import net.fireboy.milestone.task.MilestoneTaskDefinition;
 import net.fireboy.milestone.task.TaskAssignment;
 import net.minecraft.ChatFormatting;
@@ -45,7 +46,7 @@ public final class MilestoneJournal {
                     + "  [" + record.state().name() + "]")
                     .withStyle(ChatFormatting.GOLD));
             player.sendSystemMessage(Component.literal("   " + record.contributorCount() + "/"
-                    + record.type().minimumContributors() + " contributors  |  "
+                    + MilestoneContentConfig.finalThreshold(record) + " contributors to complete  |  "
                     + record.dimension() + " @ " + formatPos(record.corePos()))
                     .withStyle(ChatFormatting.GRAY));
 
@@ -64,11 +65,13 @@ public final class MilestoneJournal {
                 MilestoneTaskDefinition task = MilestoneTaskCatalog.get(record, assignment.taskId());
                 String title = task == null ? "Unknown objective" : task.clue();
                 player.sendSystemMessage(Component.literal("   Your objective: " + title + " — "
-                        + (assignment.completed() ? "COMPLETE" : "INCOMPLETE"))
-                        .withStyle(assignment.completed() ? ChatFormatting.GREEN : ChatFormatting.AQUA));
+                        + (assignment.completed() ? "ACCEPTED"
+                                : assignment.readyToSubmit() ? "READY TO SUBMIT" : "IN PROGRESS"))
+                        .withStyle(assignment.completed() ? ChatFormatting.GREEN
+                                : assignment.readyToSubmit() ? ChatFormatting.GOLD : ChatFormatting.AQUA));
             }
 
-            MilestoneType.RewardThreshold next = record.type().nextThresholdAfter(record.contributorCount());
+            MilestoneContentConfig.RewardStage next = MilestoneContentConfig.nextRewardStage(record);
             if (next != null) {
                 player.sendSystemMessage(Component.literal("   Next reward at " + next.contributors()
                         + ": " + next.description()).withStyle(ChatFormatting.LIGHT_PURPLE));

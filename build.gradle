@@ -122,6 +122,13 @@ dependencies {
     // Keep runClient usable for testing the actual Create schematic integration.
     localRuntime files('libs/create-1.21.1-6.0.10.jar')
 
+    // Optional JEI 19 API/implementation from the already-installed instance.
+    // The jar is read in-place; Gradle does not copy or install it.
+    def jeiDevJar = file(providers.gradleProperty('milestone_install_instance').get()
+            + '/mods/jei-1.21.1-neoforge-19.53.0.426.jar')
+    compileOnly files(jeiDevJar)
+    localRuntime files(jeiDevJar)
+
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
     // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"

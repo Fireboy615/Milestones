@@ -6,6 +6,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.GsonBuilder;
 import net.fireboy.milestone.milestone.MilestoneType;
+import net.fireboy.milestone.milestone.MilestoneUnlock;
+import net.fireboy.milestone.milestone.MilestonePortalAccess;
 import net.fireboy.milestone.milestone.MilestoneRecord;
 import net.fireboy.milestone.milestone.MilestoneState;
 import net.fireboy.milestone.milestone.MilestoneManager;
@@ -36,10 +38,29 @@ public final class MilestoneContentConfig {
     private static final Logger LOG = LoggerFactory.getLogger(MilestoneContentConfig.class);
     private static volatile Snapshot serverSnapshot;
     private static volatile Snapshot clientSnapshot;
+    /** One main-tendril/branch growth update per this many server ticks. */
+    public static final int DEFAULT_GROWTH_INTERVAL_TICKS = 40;
+    public static final int MAX_GROWTH_INTERVAL_TICKS = 1200;
     private MilestoneContentConfig() {}
 
     public record TaskEntry(MilestoneTaskDefinition task, String category, String difficulty) {}
+    /** Named, reusable player-task pool. A core selects one group, not filters. */
+    public record TaskGroup(String id, String name, List<String> taskIds) {
+        public TaskGroup { taskIds = List.copyOf(taskIds); }
+    }
     public record RewardItem(ResourceLocation item, int count) {}
+    /** Typed progression effects; portal selectors remain namespaced and
+     * independent of the specific mod that provides the portal block. */
+    public record StageReward(String type, List<String> ids, int hourlyPay,
+                              String dimension, String portalType,
+                              MilestonePortalAccess portalAccess) {
+        public StageReward { ids = List.copyOf(ids); }
+    }
+    public record RewardStage(int contributors, MilestoneUnlock unlock, String description,
+                              List<StageReward> rewards) {
+        public RewardStage { rewards = List.copyOf(rewards); }
+    }
+
     public record CoreSettings(int tier, boolean enabled, MilestoneType profile,
                                String name, int minY, int maxY, int minDistance,
                                int maxDistance, double depthFraction,
@@ -48,7 +69,8 @@ public final class MilestoneContentConfig {
                                String taskMode, List<Integer> requiresCompletedCores,
                                List<String> allowedBiomes, List<String> blockedBiomes,
                                String dimension, int rewardXp, List<String> rewardCommands,
-                               List<RewardItem> rewardItems) {
+                               List<RewardItem> rewardItems,
+                               List<RewardStage> rewardStages, String taskGroup) {
         public CoreSettings {
             categories = List.copyOf(categories);
             taskIds = List.copyOf(taskIds);
@@ -57,13 +79,29 @@ public final class MilestoneContentConfig {
             blockedBiomes = List.copyOf(blockedBiomes);
             rewardCommands = List.copyOf(rewardCommands);
             rewardItems = List.copyOf(rewardItems);
+            rewardStages = List.copyOf(rewardStages);
+        }
+
+        public int finalThreshold() {
+            // The final reward stage is the completion target.
+            // A Core without stages completes after one accepted contribution.
+            return rewardStages.isEmpty() ? 1
+                    : rewardStages.get(rewardStages.size() - 1).contributors();
+        }
+
+        public RewardStage nextThresholdAfter(int count) {
+            for (RewardStage stage : rewardStages)
+                if (stage.contributors() > count) return stage;
+            return null;
         }
     }
     public record Snapshot(Map<String, TaskEntry> tasks,
-                           Map<Integer, CoreSettings> cores, String payload) {
+                           Map<Integer, CoreSettings> cores, String payload,
+                           int growthIntervalTicks, Map<String, TaskGroup> groups) {
         public Snapshot {
             tasks = Collections.unmodifiableMap(new LinkedHashMap<>(tasks));
             cores = Collections.unmodifiableMap(new LinkedHashMap<>(cores));
+            groups = Collections.unmodifiableMap(new LinkedHashMap<>(groups));
         }
         public CoreSettings core(int tier) { return cores.get(tier); }
     }
@@ -93,6 +131,163 @@ public final class MilestoneContentConfig {
     }
 
     public static void loadServer() { reloadServer(); }
+
+    public static int finalThreshold(Snapshot snapshot, int tier, MilestoneType type) {
+        CoreSettings settings = snapshot.core(tier);
+        return settings != null ? settings.finalThreshold() : type.finalThreshold();
+    }
+
+    public static List<RewardStage> rewardStages(Snapshot snapshot, int tier, MilestoneType type) {
+        CoreSettings settings = snapshot.core(tier);
+        return settings != null ? settings.rewardStages() : defaultRewardStages(type);
+    }
+
+    public static RewardStage nextRewardStage(Snapshot snapshot, int tier, MilestoneType type, int count) {
+        for (RewardStage stage : rewardStages(snapshot, tier, type))
+            if (stage.contributors() > count) return stage;
+        return null;
+    }
+
+    public static int finalThreshold(MilestoneRecord record) {
+        return finalThreshold(server(), record.coreTier(), record.type());
+    }
+
+    public static List<RewardStage> rewardStages(MilestoneRecord record) {
+        return rewardStages(server(), record.coreTier(), record.type());
+    }
+
+    public static RewardStage nextRewardStage(MilestoneRecord record) {
+        return nextRewardStage(server(), record.coreTier(), record.type(), record.contributorCount());
+    }
+
+    private static List<RewardStage> defaultRewardStages(MilestoneType type) {
+        return type.thresholds().stream()
+                .map(t -> new RewardStage(t.contributors(), t.unlock(), t.description(), List.of())).toList();
+    }
+
+    private static List<RewardStage> parseRewardStages(JsonObject object, MilestoneType type,
+                                                       int tier) {
+        if (!object.has("reward_stages")) return defaultRewardStages(type);
+        JsonArray rows = object.getAsJsonArray("reward_stages");
+        if (rows.size() > 32)
+            throw new IllegalArgumentException("Core " + (tier + 1) + ": maximum 32 reward stages");
+        List<RewardStage> stages = new ArrayList<>();
+        Set<Integer> used = new HashSet<>();
+        for (JsonElement element : rows) {
+            JsonObject stage = element.getAsJsonObject();
+            int count = number(stage, "contributors", 0);
+            if (count < 1 || count > 256 || !used.add(count))
+                throw new IllegalArgumentException("Core " + (tier + 1)
+                        + ": contributor milestones must be unique and between 1-256");
+            String description = str(stage, "description", "").trim();
+            if (description.isEmpty() || description.length() > 120)
+                throw new IllegalArgumentException("Core " + (tier + 1)
+                        + ": reward descriptions must be 1-120 characters");
+            MilestoneUnlock unlock = null;
+            String name = str(stage, "unlock", "").trim();
+            if (!name.isEmpty()) {
+                try { unlock = MilestoneUnlock.valueOf(name); }
+                catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException("Core " + (tier + 1)
+                            + ": unknown global unlock " + name);
+                }
+            }
+            List<StageReward> effects = new ArrayList<>();
+            if (stage.has("rewards")) {
+                JsonArray all = stage.getAsJsonArray("rewards");
+                if (all.size() > 12) throw new IllegalArgumentException(
+                        "Core " + (tier + 1) + ": max 12 rewards per stage");
+                for (JsonElement effect : all) {
+                    JsonObject reward = effect.getAsJsonObject();
+                    String kind = str(reward, "type", "");
+                    // Historical achievement rewards are accepted only to keep
+                    // existing configs loadable. They are no longer awarded.
+                    if (!List.of("achievement", "recipes", "dimension", "portal", "hourly_pay").contains(kind))
+                        throw new IllegalArgumentException(
+                                "Core " + (tier + 1) + ": unknown reward type " + kind);
+                    int hourlyPay = kind.equals("hourly_pay")
+                            ? number(reward, "amount", -1) : 0;
+                    if (kind.equals("hourly_pay") && (hourlyPay < 1 || hourlyPay > 100000))
+                        throw new IllegalArgumentException("Core " + (tier + 1)
+                                + ": hourly pay increases must be $1-$100,000/hour");
+                    List<String> ids = strings(reward, "ids");
+                    String portalDimension = "";
+                    String portalType = "";
+                    MilestonePortalAccess portalAccess = null;
+                    if (kind.equals("portal")) {
+                        portalDimension = str(reward, "dimension", "");
+                        portalType = str(reward, "portal_type", "");
+                        try {
+                            portalAccess = MilestonePortalAccess.valueOf(
+                                    str(reward, "access", ""));
+                        } catch (IllegalArgumentException exception) {
+                            throw new IllegalArgumentException("Core " + (tier + 1)
+                                    + ": invalid portal access mode");
+                        }
+                        if (ResourceLocation.tryParse(portalDimension) == null
+                                || ResourceLocation.tryParse(portalType) == null)
+                            throw new IllegalArgumentException("Core " + (tier + 1)
+                                    + ": portal rewards require dimension and portal IDs");
+                    }
+                    if (!kind.equals("hourly_pay") && !kind.equals("portal")
+                            && (ids.isEmpty() || ids.size() > 80
+                                    || new HashSet<>(ids).size() != ids.size()))
+                        throw new IllegalArgumentException(
+                                "Core " + (tier + 1) + ": rewards require 1-80 unique IDs");
+                    for (String id : ids) {
+                        if (kind.equals("dimension")) {
+                            // Legacy Nether gateway flags are still accepted,
+                            // while all namespaced dimension IDs can be stored.
+                            boolean legacy = false;
+                            try { MilestoneUnlock.valueOf(id); legacy = true; }
+                            catch (IllegalArgumentException ignored) { }
+                            if (!legacy && (ResourceLocation.tryParse(id) == null
+                                    || !id.equals(ResourceLocation.tryParse(id).toString())))
+                                throw new IllegalArgumentException("Core " + (tier + 1)
+                                        + ": invalid dimension ID " + id);
+                        } else if (kind.equals("achievement")) {
+                            if (ResourceLocation.tryParse(id) == null)
+                                throw new IllegalArgumentException(
+                                        "Core " + (tier + 1) + ": invalid advancement ID " + id);
+                        } else if (!id.matches("[a-z0-9_.-]+:\\*")
+                                && (ResourceLocation.tryParse(id) == null || !id.equals(
+                                        ResourceLocation.tryParse(id).toString()))) {
+                            throw new IllegalArgumentException(
+                                    "Core " + (tier + 1) + ": invalid recipe selector " + id);
+                        }
+                    }
+                    effects.add(new StageReward(kind, ids, hourlyPay,
+                            portalDimension, portalType, portalAccess));
+                }
+            }
+            stages.add(new RewardStage(count, unlock, description, effects));
+        }
+        stages.sort(Comparator.comparingInt(RewardStage::contributors));
+        return List.copyOf(stages);
+    }
+
+    /** Runtime server setting, changed by an operator Save or /milestoneconfig reload. */
+    public static int growthIntervalTicks() {
+        Snapshot snapshot = serverSnapshot;
+        return snapshot == null ? DEFAULT_GROWTH_INTERVAL_TICKS : snapshot.growthIntervalTicks();
+    }
+
+    private static int parseGrowthInterval(JsonObject root) {
+        if (!root.has("growth_interval_ticks")) return DEFAULT_GROWTH_INTERVAL_TICKS;
+        JsonElement value = root.get("growth_interval_ticks");
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber())
+            throw new IllegalArgumentException("growth_interval_ticks must be an integer");
+        int ticks;
+        try {
+            ticks = Integer.parseInt(value.getAsString());
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException("growth_interval_ticks must be an integer");
+        }
+        if (ticks < 1 || ticks > MAX_GROWTH_INTERVAL_TICKS)
+            throw new IllegalArgumentException("growth_interval_ticks must be between 1 and "
+                    + MAX_GROWTH_INTERVAL_TICKS);
+        return ticks;
+    }
 
     /** Entire draft commits as a unit after strict validation, never field-by-field. */
     public static synchronized String saveBundle(String bundle) {
@@ -185,13 +380,32 @@ public final class MilestoneContentConfig {
         if (!coreRoot.get("enabled").isJsonPrimitive()
                 || !coreRoot.get("enabled").getAsJsonPrimitive().isBoolean())
             throw new IllegalArgumentException("enabled must be true or false");
+        parseGrowthInterval(coreRoot);
         JsonArray taskList = taskRoot.getAsJsonArray("tasks");
         JsonArray coreList = coreRoot.getAsJsonArray("cores");
         if (taskList == null || coreList == null) throw new IllegalArgumentException("Missing tasks/cores arrays");
         if (taskList.size() > 80 || coreList.size() > 32)
             throw new IllegalArgumentException("Maximum 80 tasks and 32 Core profiles");
+        for (JsonElement item : coreList) {
+            JsonObject core = item.getAsJsonObject();
+            if (core.has("unlock_category")
+                    && str(core, "task_group", "").isBlank())
+                throw new IllegalArgumentException("Core "
+                        + (number(core, "tier", -1) + 1)
+                        + " requires a Task Group (configure one under Tasks)");
+        }
         Snapshot checked = parse(tasks, cores);
-        MilestoneFeatureLocks.parse(coreRoot,checked.cores().keySet());
+        if (taskRoot.has("groups")
+                && checked.groups().size() != taskRoot.getAsJsonArray("groups").size())
+            throw new IllegalArgumentException("Invalid task group entry");
+        for (MilestoneFeatureLocks.Gate gate :
+                MilestoneFeatureLocks.parse(coreRoot, checked.cores().keySet())) {
+            var linkedCore = checked.core(gate.core());
+            if (gate.unlockContributors() > linkedCore.finalThreshold())
+                throw new IllegalArgumentException("Feature " + gate.id()
+                        + ": unlock_contributors is above Core " + (gate.core() + 1)
+                        + "'s final reward threshold (" + linkedCore.finalThreshold() + ")");
+        }
         MilestoneShop.parse(coreRoot,checked.cores().keySet());
         if (checked.tasks().size() != taskList.size() || checked.cores().size() != coreList.size())
             throw new IllegalArgumentException("Invalid or duplicate task/Core entry; inspect log");
@@ -454,6 +668,28 @@ public final class MilestoneContentConfig {
                 LOG.warn("Skipping invalid Milestone task: {}", exception.getMessage());
             }
         }
+        Map<String, TaskGroup> groups = new LinkedHashMap<>();
+        if (tasksRoot.has("groups")) {
+            JsonArray rows = tasksRoot.getAsJsonArray("groups");
+            if (rows.size() > 64) throw new IllegalArgumentException("Maximum 64 task groups");
+            for (JsonElement element : rows) {
+                JsonObject entry = element.getAsJsonObject();
+                String id = str(entry, "id", "");
+                String name = str(entry, "name", "").trim();
+                if (!id.matches("[a-z0-9_-]{1,64}") || groups.containsKey(id))
+                    throw new IllegalArgumentException("Invalid or duplicate task group ID: " + id);
+                if (name.isEmpty() || name.length() > 80)
+                    throw new IllegalArgumentException("Task group " + id + " needs a name (1-80 characters)");
+                List<String> ids = strings(entry, "task_ids");
+                if (ids.isEmpty() || ids.size() > 80 || new HashSet<>(ids).size() != ids.size())
+                    throw new IllegalArgumentException("Group " + id + " requires 1-80 unique task IDs");
+                for (String taskId : ids)
+                    if (!tasks.containsKey(taskId))
+                        throw new IllegalArgumentException(
+                                "Group " + id + " references unknown custom task: " + taskId);
+                groups.put(id, new TaskGroup(id, name, ids));
+            }
+        }
         Map<Integer, CoreSettings> cores = new LinkedHashMap<>();
         for (JsonElement element : coresRoot.getAsJsonArray("cores")) {
             try {
@@ -506,6 +742,30 @@ public final class MilestoneContentConfig {
                 String dimension = str(o, "dimension", "minecraft:overworld");
                 if (ResourceLocation.tryParse(dimension) == null)
                     throw new IllegalArgumentException("Invalid dimension ID");
+                // Legacy minimum_contributors is ignored; the last reward stage
+                // determines completion, or one contribution if there are no stages.
+                List<RewardStage> stages = parseRewardStages(o, type, tier);
+                String groupId = str(o, "task_group", "");
+                if (o.has("unlock_category") && groupId.isBlank())
+                    throw new IllegalArgumentException("Core " + (tier + 1)
+                            + " must select a Task Group in the editor");
+                if (!groupId.isBlank()) {
+                    TaskGroup group = groups.get(groupId);
+                    if (group == null) throw new IllegalArgumentException(
+                            "Core " + (tier + 1) + " references missing task group: " + groupId);
+                    // The group must have at least one task valid for this type.
+                    boolean eligible = group.taskIds().stream().anyMatch(tasks::containsKey);
+                    if (!eligible) throw new IllegalArgumentException(
+                            "Core " + (tier + 1) + " group has no available tasks: " + groupId);
+                }
+                String purpose = str(o, "unlock_category", "recipes");
+                if (!List.of("recipes", "dimension", "allowance").contains(purpose))
+                    throw new IllegalArgumentException("Core " + (tier + 1)
+                            + ": unlock_category must be recipes, dimension or allowance");
+                String futureStructure = str(o, "structure_type", "default");
+                if (!futureStructure.matches("[a-z0-9_-]{1,64}"))
+                    throw new IllegalArgumentException("Core " + (tier + 1)
+                            + ": invalid future structure type");
                 cores.put(tier, new CoreSettings(tier,
                         !o.has("enabled") || o.get("enabled").getAsBoolean(),
                         type, str(o, "name", "Milestone " + (tier + 1)),
@@ -513,7 +773,8 @@ public final class MilestoneContentConfig {
                         str(o, "difficulty", "normal"), strings(o, "categories"),
                         selected, schematic, color, mode, prerequisites,
                         strings(o, "allowed_biomes"), strings(o, "blocked_biomes"),
-                        dimension, xp, commands, rewardItems(o)));
+                        dimension, xp, commands, rewardItems(o),
+                        stages, groupId));
             } catch (Exception exception) {
                 LOG.warn("Skipping invalid Milestone Core configuration: {}", exception.getMessage());
             }
@@ -528,7 +789,7 @@ public final class MilestoneContentConfig {
         JsonObject combined = new JsonObject();
         combined.add("tasks", tasksRoot);
         combined.add("cores", coresRoot);
-        return new Snapshot(tasks, cores, combined.toString());
+        return new Snapshot(tasks, cores, combined.toString(), parseGrowthInterval(coresRoot), groups);
     }
 
     public static List<MilestoneTaskDefinition> pool(Snapshot snapshot, int tier,
@@ -537,6 +798,17 @@ public final class MilestoneContentConfig {
         CoreSettings core = snapshot.core(tier);
         if (core == null) return legacy;
         List<MilestoneTaskDefinition> result = new ArrayList<>();
+        if (!core.taskGroup().isBlank()) {
+            TaskGroup group = snapshot.groups().get(core.taskGroup());
+            if (group == null) return List.of();
+            for (String id : group.taskIds()) {
+                TaskEntry custom = snapshot.tasks().get(id);
+                if (custom != null) result.add(custom.task());
+            }
+            // Never silently substitute unrelated tasks for a selected group.
+            return List.copyOf(result);
+        }
+        // Older cores without a group retain the working legacy selection.
         if (core.taskMode().equals("manual")) {
             for (String id : core.taskIds()) {
                 TaskEntry entry = snapshot.tasks().get(id);

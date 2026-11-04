@@ -360,3 +360,447 @@ than the far right of the item detail pane; wheel and drag both work there.
 The header has darker Credits, Next reset, and Held text strips. The
 selected item's detail panel uses a high-contrast dark title bar, a pale
 description area with near-black text, and a dark price footer.
+
+### Multi-currency costs and global/individual unlocks (October 2026)
+
+**Mission Station > Config > Shop Offers > Edit Offer > Costs & Unlocks**
+opens the item-payment and unlock-condition editors (operator-only through
+the existing server-validated Config system). Existing offers without these
+fields behave exactly as before.
+
+Each offer accepts **up to 8 item payments** (on top of its existing required
+credit price) and **up to 8 unlock objectives**. The item payment editor
+accepts item registry IDs and required counts from 1 to 2304. Each item ID
+must be unique per offer; costs are counted and deducted from the buyer's
+normal inventory (main 27 slots and 9 hotbar slots). All payments are checked
+first, then committed on the server. A missing item/credit requirement blocks
+purchase and consumes nothing.
+
+Each unlock objective has:
+- **Type:** kill, structure, or advancement
+- **Target:** full registry ID such as minecraft:wither,
+  minecraft:ancient_city, or minecraft:story/mine_diamond
+- **Count:** kill objectives may require 1-100000 kills;
+  structure and advancement objectives use 1
+- **Scope:** individual (each player earns it) or global
+  (the first eligible player to meet the condition unlocks it for everyone)
+
+Multiple objectives on an offer are joined by **AND**, and may mix scopes.
+A separate existing requires_core prerequisite still applies globally.
+Example offer configuration:
+
+    "cost_items": [
+      { "item": "minecraft:diamond", "count": 4 }
+    ],
+    "unlock_conditions": [
+      { "type": "kill", "target": "minecraft:wither", "count": 1, "scope": "global" },
+      { "type": "structure", "target": "minecraft:ancient_city", "count": 1, "scope": "individual" },
+      { "type": "kill", "target": "minecraft:enderman", "count": 5, "scope": "individual" }
+    ]
+
+Unlock progress is stored in world SavedData named milestone_shop_unlocks,
+not attached to the two-hour shop stock. It persists after restarts and stock
+rerolls. Both individual and server-wide progress are tracked only for
+conditions configured in the active shop. Kill credit is awarded to the player
+responsible for the living entity's death. Structure credit requires the player
+to be inside an actual generated structure's bounds; detection runs every
+5 seconds while a player is in an already-loaded chunk (no locate command or
+new world generation). A player's already-earned vanilla advancement also
+satisfies newly configured individual advancement objectives. New global
+advancement objectives require an event after that objective is configured.
+
+Buyer-facing Resonant Exchange and All Items show item costs, number held,
+unlock progress and scope. The Buy button is disabled if requirements are
+unmet. The server independently rechecks everything on each purchase.
+Hover over an item icon for the **complete list** of conditions and costs.
+
+**World/backups:** Do not delete milestone_shop_unlocks.dat unless you want
+to reset global and individual unlock progress. Editing or removing an offer
+does not delete recorded progress for conditions which still use the same
+type, target and scope. Mis-typed structure/advancement registry IDs can
+prevent unlocking; use full valid IDs from installed datapacks/mods.
+
+### Player Intel — approximate player location reports (October 2026)
+
+The **Resonant Exchange > Player Intel** button opens a searchable list of
+players who are currently online or were previously recorded by the Milestone
+mod. The list contains **only names, UUIDs and online/offline status**.
+Choose a player and buy a location report for shop credits.
+
+* A player who's online is located using their current server position at
+  purchase time. An offline player's position comes from the last location
+  recorded while they were online (updated every 10 seconds and on logout).
+  Offline players first become available after the mod has observed them.
+* A purchased report is delivered **only to the buyer's chat**, showing the
+  player's name, online/current or offline/last-known status, dimension,
+  and an approximate X/Z waypoint **within 100 horizontal blocks** of the
+  actual current/recorded location. The Y coordinate is never included.
+  Offline reports include an ISO-8601 timestamp of the last recorded position.
+* The coordinates are picked randomly between about 55 and 90 blocks from
+  the real position when a new estimate is required. One stable estimate
+  is saved per target and shared across **all buyers and world restarts**.
+  Subsequent purchases reuse that estimate so long as it remains within
+  100 blocks of the target; this avoids trivial triangulation from
+  repeatedly purchasing fresh estimates for a stationary player.
+* The exact last-known positions and stable approximations are stored
+  server-side in world SavedData (milestone_shop_player_intel). The network
+  never sends an exact position to clients, and no position is sent just
+  to open the player list. Buyer UUID and the shop block's proximity are
+  validated on the server for every purchase.
+* Report purchases charge only shop credits, are separate from the rotating
+  offer stock, and do not affect normal item purchases or one-per-cycle limits.
+  A failed purchase does not deduct credits. Player names are not sent to
+  chat globally. Reports do not teleport, track live movement, or reveal Y.
+
+**Default price:** 100 shop credits per report. OPs can change it via
+**Mission Station > Config > Shop Offers > Stock Limits > Player Intel price**.
+Valid range 0-1,000,000; **0 disables the Player Intel button**.
+The setting is saved as shop.player_intel_price in the existing Cores JSON.
+Older shop configs automatically receive the default when parsed.
+
+Example shop setting:
+
+    "shop": {
+      "player_intel_price": 100,
+      "credits_per_contribution": 10,
+      "offers": []
+    }
+
+**Testing:** Use two test players (one online, then offline), check
+the reported point remains within 100 blocks of the true X/Z, verify
+purchasing repeatedly while stationary yields the same estimate,
+test insufficient funds, config price 0 and cross-restart persistence.
+
+### Selling real Create schematics in the Resonant Exchange (October 2026)
+
+**First import the schematic:** Mission Station > Config > Schematics > Import
+from Create. Place the desired compressed .nbt structure in the installed
+Create schematic folder and use the existing import workflow. It copies
+validated schematics to config/milestone/schematics and registers an ID and
+display name in the Milestone config.
+
+**Then add a shop offer:** Mission Station > Config > Shop Offers > + Add Offer
+(or select an existing offer). In Edit Shop Offer:
+1. Change **Reward type** from Item Stack to Filled Create Schematic.
+2. Click **Create Schematic** to cycle through schematics registered under
+   the main Schematics page; it initially selects the first if available.
+3. Set price, rarity, description, required Core, item payments and unlocks.
+4. Save the config through the parent configuration screen.
+
+Schematic offers are normal rotating stock, supporting reservations,
+per-player purchase limits, shop rerolls and all existing unlock and
+item/credit payment rules. The reward item icon uses Create's actual
+schematic item, with an **S** in the item slot, and the full catalog labels it.
+One purchase yields ONE filled schematic; quantity cannot be increased.
+Existing item offers are unchanged (missing reward_type defaults to item).
+
+When purchasing, the server first checks the registered schematic ID and
+revalidates the safe compressed .nbt file (same file validation as the main
+Milestone schematic library: at most 262144 compressed bytes, dimensions at
+most 24 on each axis, no block-entity or entity contents and no forbidden
+blocks). If preparation fails, **no credits or inventory payment items are
+consumed**. Once the payment succeeds, Create's filled schematic item is
+given to the buyer, and its exact .nbt data is sent privately to them.
+
+Purchased templates live under Create's uploaded schematics directory, in
+a dedicated milestone-shop owner folder. Content-hashed filenames protect
+previous purchases if an OP later edits an original .nbt. Players carrying
+or receiving a purchased schematic have its client template synced at login
+and periodically when their inventory changes (including traded items).
+The entire shop blueprint library is NEVER sent to all connecting players.
+The previous Core/Mission Station schematic features are unaffected.
+
+JSON structure example within an offer:
+    "reward_type": "schematic",
+    "schematic": "my_cottage",
+    "count": 1
+
+Known limitation: This currently uses the existing registered Milestone
+schematic library and its conservative 24-block-side/no-block-entity limits.
+It does not directly sell arbitrary unregistered files from a player's PC.
+
+### Existing Loot Pool Editor (October 2026) — locally compiled, NOT installed
+
+Navigate to **Mission Station > Config > Loot Tables**, select any loaded
+loot table, then press **Edit Existing Pools / Restore**.
+
+The new pool editor lists actual entries within the selected pool (six per
+page) and supports navigation across pools. The UI shows the pool rolls,
+total entries and whether Milestone's world datapack has a staged override.
+
+For a **direct item entry** (type minecraft:item), operators may:
+- Stage a new relative **weight** from 1 to 1000; this does not represent
+  a standalone percentage, because pool rolls, conditions and competing
+  entries determine the actual outcome.
+- Stage a **count** from 1 to 64, optionally with min/max for a uniformly
+  distributed stack count. Only entries with absent or exactly one simple
+  existing minecraft:set_count function are accepted. Unrecognized or
+  conditional count functions are left read-only for count editing.
+- **Remove** the direct item entry if the pool has at least one other entry.
+- **Restore Original Table**, which removes only Milestone's override and
+  exposes the underlying datapack's original table after /reload.
+
+Nested alternatives, groups, tags, dynamic entries and arbitrary modded
+loot functions remain visible and are NOT edited by this version. All
+unknown JSON fields, existing pool conditions, non-count entry functions
+and other entries are preserved. Each operation requires two clicks to
+confirm before any server-side filesystem change. The server revalidates
+the selected table, entry indexes, OP permission, numeric limits and the
+SHA-256 revision of the currently staged table to prevent stale writes.
+Only server-generated world datapack paths are writable; raw client JSON
+and arbitrary absolute paths are not accepted.
+
+Edits stage a world datapack override inside
+<world>/datapacks/milestone_loot_editor, preserve an on-disk backup of
+previous staged overrides in <world>/milestone-loot-backups and use an
+atomic file move when supported. The modded/vanilla source JAR remains
+untouched. **Run /datapack enable "file/milestone_loot_editor"** if the
+pack is not enabled and then **/reload** after editing. Only future loot
+generation uses the new results. Lootr per-player inventories previously
+generated are left intact.
+
+Limitations: This is not yet a general visual editor for nested items,
+weighted probabilities across conditional pools or table-level functions.
+The preview simulator and statistical reverse matching of ordinary
+already-opened chests remain future work. The editor is compiled locally
+using Gradle check/jar; it is not automatically deployed to Internshit
+Server until you explicitly ask.
+
+### Loot browser categories, icon lists & scrolling (October 2026)
+
+Mission Station > Config > Loot Tables now defaults to **Chests** instead
+of mixing chest contents with every block's drops. The filter tabs are
+Chests, Blocks, Mobs (entity loot), Fishing, Other, and All. Searching
+only includes the selected category. Categories are evaluated on the
+server from conventional loot-table registry paths and, for unusually
+named modded loot tables, the top-level loot-table type field. Some
+nonstandard scripted mod loot may appear under Other; All is an escape
+hatch. Clicking a chest in the world still identifies its Lootr or
+vanilla source table regardless of the current filter.
+
+Each page shows its filter, total matching count, and a scroll track.
+The track can be clicked/dragged and the mouse wheel scrolls while over
+the table list. Buttons display a representative category item icon,
+with the full modded registry ID available on hover.
+
+After selecting a table, the right side shows the explicit item entries
+using their actual Minecraft inventory icons and localized item names.
+Hover for the full registry ID; use its independent scrollbar/mouse wheel
+to browse longer item lists. The UI currently previews at most 96 distinct
+direct item IDs; indirect tag or nested dynamic rewards may require
+opening the pools themselves and are not guaranteed to be exhaustive.
+
+The **Edit Existing Pools / Restore** editor also has item icons beside
+selectable direct entries, labels/registry-ID hover text, and a separate
+draggable list scrollbar and mouse wheel navigation between pages.
+All previously implemented server-side OP checks, editor confirmation,
+datapack staging, optional Lootr support, and historical inspection remain.
+
+To avoid unexpectedly changing the modpack, compile locally with
+gradlew check jar --offline instead of gradlew build (which runs
+the automatic Internshit Server installation task). These changes do
+not affect a running world until the user explicitly requests deployment.
+
+### Add new weighted item entries to existing loot pools (October 2026)
+
+This upgrade is **written and compiled in IntelliJ, not deployed to the
+Internshit Server modpack** until the user requests installation.
+
+Workflow for operators:
+1. Mission Station > Config > Loot Tables; find a table in Chests,
+   Blocks, Mobs, Fishing, Other, or All.
+2. Select a table and choose **Edit / Add Pool Entries**.
+3. Navigate to the loot pool where the new item belongs. Click
+   **+ Add Item to This Pool** on the left side.
+4. In the dedicated Add Entry screen, use **Choose Item...** for a
+   searchable vanilla/modded item picker (with icons), or enter the
+   registered item ID manually. Verify the item preview.
+5. Set **relative weight (1-1000)** and **minimum/maximum count
+   (1-64)**. The weight is relative to other entries in that pool,
+   NOT a guaranteed drop percentage. The stack count is a fixed
+   number or a uniform inclusive range.
+6. Click **Stage New Entry** and click **CONFIRM Add Entry**.
+   After the server writes the override, you return to the
+   appropriate loot pool page with the new item displayed.
+7. Enable the world datapack if not already enabled and run /reload
+   for *future* chest/player loot to reflect the new entry.
+
+Unlike **Stage Bonus to Datapack**, which adds a new independent pool,
+Add Entry appends a standard minecraft:item entry to an **existing**
+pool, inheriting that pool's rolls, conditions, and competition with
+other entries. Existing conditions, functions, NBT, and pool metadata
+are preserved. An unconditional direct item already in the same
+pool is rejected as a duplicate; edit its weight/count instead.
+The editor deliberately does not add nested alternative, tag,
+dynamic or custom modded entry types yet.
+
+Validation is enforced on the server (OP permission level 2,
+loaded loot-table registry ID, registered non-air item ID,
+existing target pool, max 256 entries, valid weight/count,
+and the expected SHA-256 table revision). Requests do not
+allow raw JSON or arbitrary paths. Previous staged overrides
+are backed up and output is written to a world datapack.
+The original Minecraft/mod JAR is never edited.
+
+### Loot menu layout cleanup (October 2026)
+
+The Loot Tables admin interface has been reorganized as a sequence of
+smaller, focused screens, without changing any loot-table permissions,
+datapack semantics, or Lootr compatibility.
+
+- **Loot Tables:** Choose Chests/Blocks/Mobs/Fishing/Other/All, search
+  the server's table IDs, inspect an item-icon preview and scroll it.
+  The bottom actions are now only **+ Bonus Pool** and **Edit Pools**.
+  Keeping numeric drop editing off this page leaves more room to browse.
+- **Loot Pools:** Navigate between pools and pages; rows show icons,
+  human-readable item names, relative weights or a Complex label.
+  Clicking a row selects it. Use **+ Add Item**, **Edit Selected**, or
+  **Restore Original Table**. The scrollbar, keyboard/mouse wheel and
+  page controls adjust to available GUI height (2-6 visible rows).
+- **Edit Selected:** Dedicated form to change an existing simple item's
+  relative weight or stack count, or remove the entry. All actions
+  require confirmation and preserve unrelated conditions/functions.
+  Complex entries stay read-only where the backend cannot edit safely.
+- **Add Item / Bonus Pool:** The same searchable item-picker form now
+  handles both workflows. It clearly labels the difference between an
+  item competing in an existing pool (relative weight 1-1000) and a
+  separate bonus pool (percentage chance 1-100). Both allow a stack
+  range from 1 to 64 and require confirmation before writing.
+
+This resolves collisions between previews and edit fields at smaller GUI
+scales, removes overlapping edit actions from pool lists, and repairs
+scrollbar dragging to the final partially filled page. A GUI scale that
+produces a very tiny available window may still need adjustment in
+Minecraft's Video Settings.
+
+Built locally with Gradle check/jar only. Do not use Gradle build to
+test without intending to install, because this project's build task
+automatically copies the JAR to Internshit Server.
+
+### Editing fixed enchantments in loot entries (October 2026)
+
+New optional editor (compiled locally; not automatically deployed):
+
+1. Open Mission Station > Config > Loot Tables.
+2. Choose the chest/block/entity loot table, then **Edit Pools**.
+3. Select a **direct item** entry, click **Edit Selected** and
+   **Enchantments...**.
+4. Left column shows that entry's fixed enchants/levels, if any.
+   Right column searches ALL synced vanilla + modded enchantment registry
+   entries by display name or namespace ID; it supports paging and wheel
+   scrolling. Pick one.
+5. Enter a new level, then click **Set / Add Enchant** twice to
+   confirm, or **Remove Enchant** twice to remove an existing one.
+6. The server writes a staged world datapack override. Use /reload
+   after enabling the datapack as needed; only future loot rolls
+   change, including future per-player Lootr rolls.
+
+The editor uses 1.21.1's minecraft:set_enchantments function with
+one fixed integer level per enchantment, preserving unrelated NBT/data
+components, item functions, pool rolls, item drop weights and conditions.
+Enchanted books also use this vanilla loot function.
+
+The server enforces permission level >=2, registered enchant IDs,
+normal enchantment max level (not deliberately overlevelled values),
+a maximum of 24 fixed enchants per item entry, and the same SHA-256
+table revision check used for all other editor operations. Existing
+no-namespace ID spelling is preserved. Deleting the last fixed enchant
+removes the empty set_enchantments function.
+
+Random or conditional enchantment functions (enchant_randomly,
+enchant_with_levels, conditional/nonconstant set_enchantments,
+enchant-related set_components, plus enchantment-generating pool/table
+functions) are intentionally shown as **read-only** here. This prevents
+silently discarding RNG behavior or modded function settings. A
+separate advanced random-enchantment editor may be developed later.
+Custom modded reward functions that generate enchantments indirectly
+may not be recognized by this simple inspector.
+
+This version is NOT installed into a modpack by local Gradle check/jar;
+the user's installed Internshit Server milestone JAR is unchanged
+until explicitly requested.
+
+### Read-only Enchantment Rules inspector (October 18, 2026)
+
+Mission Station > Config > Loot Tables > select any chest, block, mob,
+fishing, or modded loot table > **Enchant Rules**.
+
+This NEW menu is separate from **Edit Pools > Edit Selected >
+Enchantments...**, which continues to add/remove fixed enchantment
+values. Enchant Rules is a *read-only source inspector* and cannot
+generate loot, open containers or change the world.
+
+The server reads the original/staged loot-table JSON and searches for
+enchantment-related functions applied to:
+- the whole table,
+- each loot pool,
+- items/entries nested inside groups, alternatives and sequences.
+
+Left column: paginated list of functions with a scope such as
+"Pool 2 > Entry 4 (minecraft:enchanted_book)".
+Right column: registered function ID, a human-readable summary where
+possible, and the function's exact source JSON. Both list pages and
+right-hand JSON details support scrolling. Lists adapt to GUI size.
+
+Recognizes vanilla fixed minecraft:set_enchantments, random
+minecraft:enchant_randomly and minecraft:enchant_with_levels,
+other minecraft:enchant_* functions, and enchantment-related
+minecraft:set_components. It shows configured fixed levels,
+level providers, option lists, and function conditions *as present
+in JSON*. Modded function settings are displayed verbatim where the
+viewer cannot interpret them safely.
+
+Read-only inspection is also available for custom or conditional
+entries; those rules remain non-editable in the fixed enchantment
+editor. The inspector does not predict exact enchantment probabilities,
+follow referenced nested loot-table IDs, or execute script-based modded
+loot generators. For unusually large modded function JSON, the preview
+is truncated at 2400 characters per rule, with a visible notice.
+A maximum of 1000 functions is scanned and displayed per table.
+
+No JAR is installed into Internshit Server by the local compile or jar
+task. Deploy only after the user explicitly requests installation.
+
+### Edit enchantment rules in existing loot tables (October 18, 2026)
+
+Navigate to **Mission Station > Config > Loot Tables > Enchant Rules**,
+choose a rule, and click **Edit Rule**. This editing control is available
+to server operators and is separate from Edit Pools > Edit Selected >
+Enchantments, which modifies fixed enchants only on one direct item.
+
+Supported safe edits:
+- **minecraft:enchant_randomly**: restrict eligible enchantments to a
+  registered enchantment ID, multiple comma-separated enchantment IDs,
+  or an enchantment tag prefixed with #; blank removes the restriction.
+  Toggle **Compatible Only** (on/off). Minecraft still chooses which
+  enchantment and level to apply during each future loot roll.
+- **minecraft:enchant_with_levels**: change the allowed enchantment IDs
+  or tag, and the enchanting power between 1 and 100, either fixed
+  (min=max) or a uniform min-max provider. These are enchanting power
+  levels, *not* the guaranteed level of each resulting enchantment.
+- **minecraft:set_enchantments**: choose a registered vanilla/modded
+  enchantment using the searchable registry picker or type its ID,
+  set its fixed level (capped at the registry's normal maximum), or
+  remove it from that rule. Deleting the last one removes the empty
+  enchantment function.
+
+The inspector's rule list identifies the item/pool/table location,
+function type, and source JSON; **Edit Rule** edits that exact original
+function. The server accepts only a small, validated set of typed fields,
+not arbitrary raw JSON or filesystem paths. Each operation requires a
+second click to confirm. Server rechecks OP permissions, SHA-256 table
+revision, path, function index and type, enchant IDs/tags and numeric
+limits before writing a staged world datapack override. Existing
+conditions, pool rolls, weights and unrelated functions remain unchanged.
+The datapack writer backs up previous staged overrides.
+
+Unsupported modded functions, complex enchantment options, and custom
+or non-uniform enchantment level providers remain viewable as source
+JSON but are read-only. Conditional functions preserve conditions
+exactly; there is no separate editor for condition probabilities yet.
+After staging, use /reload (and enable the Milestone world datapack if
+needed). Changes affect future loot only, not already rolled Lootr
+inventories or previously opened vanilla chests.
+
+Development status: local Java compilation/check/JAR; no new JAR will
+be installed into Internshit Server until the user explicitly asks.
