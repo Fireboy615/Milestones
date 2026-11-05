@@ -1,0 +1,7 @@
+{
+  "foxy_jumpscare": {
+    "sounds": [
+      { "name": "milestone:foxy_jumpscare", "stream": false }
+    ]
+  }
+}

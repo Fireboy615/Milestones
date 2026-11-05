@@ -5,6 +5,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import net.fireboy.milestone.blockentity.MilestoneCoreBlockEntity;
 import net.fireboy.milestone.gateway.PublicGatewayManager;
+import net.fireboy.milestone.easteregg.FoxyJumpscare;
 import net.fireboy.milestone.gateway.PublicGatewayRecord;
 import net.fireboy.milestone.milestone.MilestoneManager;
 import net.fireboy.milestone.milestone.MilestoneGameplayManager;
@@ -67,6 +68,15 @@ public final class MilestoneCommands {
                                             return builder.buildFuture();
                                         })
                                         .executes(MilestoneCommands::discover)))
+                        .then(Commands.literal("foxy")
+                                .then(Commands.literal("enable")
+                                        .executes(MilestoneCommands::foxyEnable))
+                                .then(Commands.literal("disable")
+                                        .executes(MilestoneCommands::foxyDisable))
+                                .then(Commands.literal("trigger")
+                                        .executes(MilestoneCommands::foxyTrigger))
+                                .then(Commands.literal("status")
+                                        .executes(MilestoneCommands::foxyStatus)))
                         .then(Commands.literal("unlocks")
                                 .executes(MilestoneCommands::unlocks)
                                 .then(Commands.literal("clear")
@@ -267,6 +277,38 @@ public final class MilestoneCommands {
                 + "). It is now listed at the Mission Station and in /milestonejournal. "
                 + "No contributions or rewards were granted."), true);
         return 1;
+    }
+
+    /** Secret operator-only Easter egg controls. No public announcements or chat spam. */
+    private static int foxyEnable(CommandContext<CommandSourceStack> context) {
+        var server = context.getSource().getServer();
+        FoxyJumpscare.setEnabled(server, true);
+        context.getSource().sendSuccess(
+                () -> Component.literal("The fox is loose. 1/10,000 each second."), false);
+        return 1;
+    }
+
+    private static int foxyDisable(CommandContext<CommandSourceStack> context) {
+        FoxyJumpscare.setEnabled(context.getSource().getServer(), false);
+        context.getSource().sendSuccess(
+                () -> Component.literal("The fox has been sealed away."), false);
+        return 1;
+    }
+
+    private static int foxyTrigger(CommandContext<CommandSourceStack> context) {
+        int recipients = FoxyJumpscare.trigger(context.getSource().getServer());
+        context.getSource().sendSuccess(
+                () -> Component.literal("Triggered the fox for " + recipients
+                        + " online player(s). No public message sent."), false);
+        return recipients;
+    }
+
+    private static int foxyStatus(CommandContext<CommandSourceStack> context) {
+        boolean armed = FoxyJumpscare.enabled(context.getSource().getServer());
+        context.getSource().sendSuccess(
+                () -> Component.literal("The fox is " + (armed ? "ARMED" : "disabled")
+                        + " (1/10,000 per real second, server-wide)."), false);
+        return armed ? 1 : 0;
     }
 
     private static int unlocks(CommandContext<CommandSourceStack> context) {

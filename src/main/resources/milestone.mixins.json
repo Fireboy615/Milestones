@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "net.fireboy.milestone.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "RecipeManagerLockMixin",
+    "StonecutterLockMixin"
+  ],
+  "client": [
+    "RecipeBookButtonLockMixin",
+    "RecipeBookOverlayButtonAccess",
+    "RecipeBookOverlayEntryLockMixin",
+    "RecipeBookOverlayLockMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

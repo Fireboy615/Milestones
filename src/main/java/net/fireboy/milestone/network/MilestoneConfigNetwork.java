@@ -38,6 +38,34 @@ public final class MilestoneConfigNetwork {
                 MilestoneClientboundBridge::handle);
     }
 
+    private static void generate(GenerationRequest request, IPayloadContext context) {
+        if (!(context.player() instanceof ServerPlayer player) || !player.hasPermissions(2)) return;
+        if (!List.of("status", "all", "core", "shop", "station").contains(request.action())) return;
+        if (request.tier() < -1 || request.tier() > 31) return;
+        String message = WorldSiteManager.requestGeneration(
+                player.getServer(), player.getUUID(), request.action(), request.tier());
+        PacketDistributor.sendToPlayer(player,
+                new GenerationStatus(WorldSiteManager.generationStatus(player.getServer(), message)));
+    }
+
+    public record GenerationRequest(String action, int tier) implements CustomPacketPayload {
+        public static final Type<GenerationRequest> TYPE =
+                new Type<>(ResourceLocation.fromNamespaceAndPath(Milestone.MOD_ID, "generate_world"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, GenerationRequest> CODEC =
+                StreamCodec.composite(ByteBufCodecs.STRING_UTF8, GenerationRequest::action,
+                        ByteBufCodecs.VAR_INT, GenerationRequest::tier, GenerationRequest::new);
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    public record GenerationStatus(String json) implements CustomPacketPayload {
+        public static final Type<GenerationStatus> TYPE =
+                new Type<>(ResourceLocation.fromNamespaceAndPath(Milestone.MOD_ID, "generation_status"));
+        public static final StreamCodec<RegistryFriendlyByteBuf, GenerationStatus> CODEC =
+                StreamCodec.composite(ByteBufCodecs.STRING_UTF8, GenerationStatus::json,
+                        GenerationStatus::new);
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     private static void request(ConfigRequest payload, IPayloadContext context) {
         if (!(context.player() instanceof ServerPlayer player) || !player.hasPermissions(2)) return;
         PacketDistributor.sendToPlayer(player,

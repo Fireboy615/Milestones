@@ -11,6 +11,8 @@ import net.fireboy.milestone.network.MilestoneConfigNetwork;
 import net.fireboy.milestone.network.MilestoneShopNetwork;
 import net.fireboy.milestone.network.MilestoneLootNetwork;
 import net.fireboy.milestone.network.RecipeLockNetwork;
+import net.fireboy.milestone.network.FoxyNetwork;
+import net.fireboy.milestone.easteregg.FoxyJumpscare;
 import net.fireboy.milestone.loot.MilestoneLootHistory;
 import net.fireboy.milestone.loot.MilestoneLootTargeting;
 import net.fireboy.milestone.gateway.NetherPortalEvents;
@@ -18,6 +20,7 @@ import net.fireboy.milestone.registry.ModBlockEntities;
 import net.fireboy.milestone.registry.ModBlocks;
 import net.fireboy.milestone.registry.ModItems;
 import net.fireboy.milestone.registry.ModMenus;
+import net.fireboy.milestone.registry.ModSounds;
 import net.fireboy.milestone.resonance.GrowthManager;
 import net.fireboy.milestone.resonance.ResonanceEvents;
 import net.fireboy.milestone.resonance.RegenerationManager;
@@ -46,6 +49,7 @@ public final class Milestone {
         ModItems.ITEMS.register(modBus);
         ModBlockEntities.BLOCK_ENTITIES.register(modBus);
         ModMenus.MENUS.register(modBus);
+        ModSounds.SOUNDS.register(modBus);
 
         modBus.addListener(this::addCreativeTabContents);
         modBus.addListener(CreateSchematicNetwork::register);
@@ -53,6 +57,7 @@ public final class Milestone {
         modBus.addListener(MilestoneShopNetwork::register);
         modBus.addListener(MilestoneLootNetwork::register);
         modBus.addListener(RecipeLockNetwork::register);
+        modBus.addListener(FoxyNetwork::register);
         NeoForge.EVENT_BUS.addListener(MilestoneContentConfig::onServerStarting);
         NeoForge.EVENT_BUS.addListener(MilestoneFeatureLocks::onServerStarting);
         NeoForge.EVENT_BUS.addListener(MilestoneFeatureLocks::onDatapackSync);
@@ -65,6 +70,7 @@ public final class Milestone {
         NeoForge.EVENT_BUS.addListener(MilestoneJournal::onPlayerLogin);
         NeoForge.EVENT_BUS.addListener(WorldSiteCommands::register);
         NeoForge.EVENT_BUS.addListener(WorldSiteManager::onServerTick);
+        NeoForge.EVENT_BUS.addListener(FoxyJumpscare::onServerTick);
         NeoForge.EVENT_BUS.addListener(ResonanceEvents::onBlockBreak);
         NeoForge.EVENT_BUS.addListener(GrowthManager::onServerTick);
         NeoForge.EVENT_BUS.addListener(RetractionManager::onServerTick);

@@ -316,6 +316,12 @@ public final class MilestoneConfigScreen extends Screen {
                             minecraft.setScreen(new MilestoneShopConfigScreen(this,draft));
                     }).bounds(x2, by + 2 * step, bw, 23).build())
                     .active=canEdit()&&!waitingForServer;
+            addRenderableWidget(Button.builder(Component.literal("World Generation"),
+                    b -> {
+                        if (minecraft != null)
+                            minecraft.setScreen(new MilestoneGenerationScreen(this));
+                    }).bounds(x1, by + 3 * step, bw * 2 + 8, 23).build())
+                    .active=canEdit() && connected() && !waitingForServer;
             return;
         }
 
@@ -1337,6 +1343,8 @@ public final class MilestoneConfigScreen extends Screen {
     }
 
     /** Sub-pages modify the draft only; Save/Cancel remain authoritative here. */
+    public boolean hasPendingChanges() { return dirty || saving || waitingForServer; }
+
     public void markConfigDirty() {
         dirty = true;
         status = "Unsaved feature changes";

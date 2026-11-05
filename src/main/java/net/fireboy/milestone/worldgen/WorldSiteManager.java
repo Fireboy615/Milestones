@@ -23,7 +23,6 @@ import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.fireboy.milestone.network.MilestoneConfigNetwork;
 import net.neoforged.neoforge.network.PacketDistributor;
 import com.google.gson.JsonArray;
@@ -140,9 +139,14 @@ public final class WorldSiteManager {
      * A manual request loads a bounded area; normal automatic placement doesn't. */
     public static String requestGeneration(MinecraftServer server, UUID requester,
                                             String action, int tier) {
-        if (!MilestoneContentConfig.enabled()) return "Enable Milestones before generating structures.";
-        if (action.equals("status")) return "Generation status refreshed.";
         WorldSiteSavedData sites = data(server);
+        if (action.equals("status")) {
+            // Prepare reservations immediately on opening the controls, rather
+            // than waiting for the first 100-tick startup generator pass.
+            if (MilestoneContentConfig.enabled()) ensurePlans(server, sites);
+            return "Generation status refreshed.";
+        }
+        if (!MilestoneContentConfig.enabled()) return "Enable Milestones before generating structures.";
         ensurePlans(server, sites);
         if (action.equals("all")) {
             int added = 0;
